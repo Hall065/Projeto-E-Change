@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DEFAULT_VEHICLE, type BatteryState, type VehicleProfile } from '../types/vehicle';
 
@@ -44,28 +44,36 @@ export function VehicleProvider({ children }: { children: React.ReactNode }) {
     })();
   }, []);
 
-  const setVehicle = (v: VehicleProfile) => {
+  const setVehicle = useCallback((v: VehicleProfile) => {
     setVehicleState(v);
     void AsyncStorage.setItem(VEHICLE_KEY, JSON.stringify(v));
-  };
+  }, []);
 
-  const updateVehicle = (patch: Partial<VehicleProfile>) => {
-    setVehicle({ ...vehicle, ...patch });
-  };
+  const updateVehicle = useCallback((patch: Partial<VehicleProfile>) => {
+    setVehicleState((prev) => {
+      const next = { ...prev, ...patch };
+      void AsyncStorage.setItem(VEHICLE_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
 
-  const setBatteryPercent = (percent: number) => {
-    const next: BatteryState = {
-      percent: Math.max(1, Math.min(100, Math.round(percent))),
-      source: 'manual',
-      updatedAt: new Date().toISOString(),
-    };
-    setBattery(next);
-    void AsyncStorage.setItem(BATTERY_KEY, JSON.stringify(next));
-  };
+  const setBatteryPercent = useCallback((percent: number) => {
+    const nextPercent = Math.max(1, Math.min(100, Math.round(percent)));
+    setBattery((prev) => {
+      if (prev.percent === nextPercent && prev.source === 'manual') return prev;
+      const next: BatteryState = {
+        percent: nextPercent,
+        source: 'manual',
+        updatedAt: new Date().toISOString(),
+      };
+      void AsyncStorage.setItem(BATTERY_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
 
   const value = useMemo(
     () => ({ vehicle, battery, setVehicle, setBatteryPercent, updateVehicle }),
-    [vehicle, battery],
+    [vehicle, battery, setVehicle, setBatteryPercent, updateVehicle],
   );
 
   return <VehicleContext.Provider value={value}>{children}</VehicleContext.Provider>;

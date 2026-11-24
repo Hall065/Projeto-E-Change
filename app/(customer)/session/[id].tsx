@@ -20,7 +20,7 @@ import { fontFamily } from '../../../src/theme/fonts';
 
 export default function SessionScreen() {
   const rawId = useLocalSearchParams<{ id: string }>().id;
-  const id = rawId ? decodeURIComponent(rawId) : rawId;
+  const id = rawId ? decodeURIComponent(String(Array.isArray(rawId) ? rawId[0] : rawId)) : '';
   const { station, session, setSession, connectorId } = useJourney();
   const { setBatteryPercent } = useVehicle();
   const [loading, setLoading] = useState(false);
@@ -30,26 +30,36 @@ export default function SessionScreen() {
   const finishingRef = useRef(false);
   const speedRef = useRef(speed);
   const lastTickRef = useRef(Date.now());
+  const lastBatteryRef = useRef<number | null>(null);
+  const priceRef = useRef(1.75);
+  const connectorIdRef = useRef(connectorId);
+  const setSessionRef = useRef(setSession);
+  const setBatteryPercentRef = useRef(setBatteryPercent);
   speedRef.current = speed;
+  connectorIdRef.current = connectorId;
+  setSessionRef.current = setSession;
+  setBatteryPercentRef.current = setBatteryPercent;
 
   useEffect(() => {
-    if (session?.id === id) return;
     if (!id) return;
-    if (isDemoSessionId(id)) {
-      const local = getDemoSession(id);
-      if (local) setSession(local);
-    }
-  }, [id, session?.id, setSession]);
+    if (session?.id === id) return;
+    if (!isDemoSessionId(id)) return;
+    const local = getDemoSession(id);
+    if (local) setSessionRef.current(local);
+  }, [id, session?.id]);
 
   const price = useMemo(() => {
-    const c = (station?.connectors ?? []).find((x) => x.id === (connectorId ?? session?.connector_id));
+    const cid = connectorId ?? session?.connector_id;
+    const c = (station?.connectors ?? []).find((x) => x.id === cid);
     return Number(c?.price_per_kwh ?? station?.min_price ?? 1.75);
-  }, [station, connectorId, session]);
+  }, [station?.min_price, station?.connectors, connectorId, session?.connector_id]);
+  priceRef.current = price;
 
   const connectorLabel = useMemo(() => {
-    const c = (station?.connectors ?? []).find((x) => x.id === (connectorId ?? session?.connector_id));
+    const cid = connectorId ?? session?.connector_id;
+    const c = (station?.connectors ?? []).find((x) => x.id === cid);
     return c ? `${c.label} · ${c.connector_type}` : 'Conector';
-  }, [station, connectorId, session]);
+  }, [station?.connectors, connectorId, session?.connector_id]);
 
   const finish = async (sessionId?: string, connId?: string | null) => {
     if (finishingRef.current) return;
@@ -57,28 +67,28 @@ export default function SessionScreen() {
     try {
       setLoading(true);
       const sid = sessionId ?? session?.id;
-      const cid = connId ?? connectorId ?? session?.connector_id;
+      const cid = connId ?? connectorIdRef.current ?? session?.connector_id;
       if (sid && cid) {
-        const ended = await endSession(sid, cid, price);
-        setSession(ended);
-        setBatteryPercent(Number(ended.battery_percent));
+        const ended = await endSession(sid, cid, priceRef.current);
+        setSessionRef.current(ended);
+        setBatteryPercentRef.current(Number(ended.battery_percent));
         router.push(`/(customer)/bill/${ended.id}`);
       } else if (id) {
         router.push(`/(customer)/bill/${id}`);
       }
-    } catch (e: any) {
-      setTickError(e?.message ?? 'Não foi possível encerrar');
+    } catch (e: unknown) {
+      setTickError(e instanceof Error ? e.message : 'Não foi possível encerrar');
       finishingRef.current = false;
     } finally {
       setLoading(false);
     }
   };
 
-  // Loop contínuo (~150 ms): a % sobe com batteryPerSec da velocidade atual
+  // Loop contínuo — deps mínimas; preço/battery via refs (evita reinício a cada tick)
   useEffect(() => {
     if (!session?.id || session.status !== 'charging' || paused) return;
     const sessionId = session.id;
-    const connId = connectorId ?? session.connector_id;
+    const connId = connectorIdRef.current ?? session.connector_id;
     let cancelled = false;
     let busy = false;
     lastTickRef.current = Date.now();
@@ -89,18 +99,23 @@ export default function SessionScreen() {
       const now = Date.now();
       const dt = Math.min(0.5, Math.max(0.05, (now - lastTickRef.current) / 1000));
       lastTickRef.current = now;
-      const currentSpeed = speedRef.current;
       try {
-        const next = await tickSession(sessionId, price, currentSpeed, dt);
+        const next = await tickSession(sessionId, priceRef.current, speedRef.current, dt);
         if (cancelled || finishingRef.current) return;
-        setSession(next);
-        setBatteryPercent(Number(next.battery_percent));
+        setSessionRef.current(next);
+        const pct = Math.round(Number(next.battery_percent));
+        if (lastBatteryRef.current !== pct) {
+          lastBatteryRef.current = pct;
+          setBatteryPercentRef.current(pct);
+        }
         setTickError(null);
         if (Number(next.battery_percent) >= 99.5) {
           await finish(sessionId, connId);
         }
-      } catch (e: any) {
-        if (!cancelled) setTickError(e?.message ?? 'Falha ao atualizar sessão');
+      } catch (e: unknown) {
+        if (!cancelled) {
+          setTickError(e instanceof Error ? e.message : 'Falha ao atualizar sessão');
+        }
       } finally {
         busy = false;
       }
@@ -114,10 +129,11 @@ export default function SessionScreen() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [session?.id, session?.status, session?.connector_id, connectorId, price, setSession, paused, setBatteryPercent]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- finish/price via refs
+  }, [session?.id, session?.status, paused]);
 
   const local = session ?? {
-    id: id ?? 'pending',
+    id: id || 'pending',
     battery_percent: 28,
     energy_kwh: 0,
     power_kw: 0,
