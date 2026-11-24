@@ -44,7 +44,7 @@ export default function WelcomeScreen() {
             <View style={styles.actions}>
               <Button title="Get Started" onPress={() => router.push('/(auth)/register')} />
               <Button title="Sign In" ghost onPress={() => router.push('/(auth)/login')} />
-              <Link href="/(customer)/map" style={styles.link}>Explore map</Link>
+              <Link href="/(customer)/(tabs)/map" style={styles.link}>Explorar mapa</Link>
             </View>
           </SafeAreaView>
         </LinearGradient>

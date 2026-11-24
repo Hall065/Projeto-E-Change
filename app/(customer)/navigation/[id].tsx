@@ -1,55 +1,71 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import Animated, {
-  Easing,
-  useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withTiming,
-} from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MapCanvas, type MapCanvasHandle } from '../../../src/components/MapCanvas';
-import { Button, Screen } from '../../../src/components/ui';
+import { NavInstructionBanner } from '../../../src/components/navigation/NavInstructionBanner';
+import { NavBottomDock } from '../../../src/components/navigation/NavBottomDock';
+import { NavSpeedometer } from '../../../src/components/navigation/NavSpeedometer';
+import { Icon } from '../../../src/components/Icon';
 import { useJourney } from '../../../src/context/JourneyContext';
+import { useVehicle } from '../../../src/context/VehicleContext';
 import { useDeviceLocation } from '../../../src/hooks/useDeviceLocation';
-import {
-  describeStep,
-  fetchDrivingRoute,
-  nearestPointOnRoute,
-  nextStepForProgress,
-  remainingDistanceKm,
-  type NavRoute,
-} from '../../../src/services/routing';
-import { colors } from '../../../src/theme/colors';
-
-function etaClock(minutes: number) {
-  const d = new Date(Date.now() + minutes * 60_000);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
+import { haversineKm } from '../../../src/lib/format';
+import { estimateRouteEnergy } from '../../../src/services/energy';
+import { computeNavProgress } from '../../../src/services/navigationEngine';
+import { detectPathManeuvers, fetchDrivingRoute, type NavRoute } from '../../../src/services/routing';
+import { fetchStationById } from '../../../src/services/stations';
+import type { MapPerspective } from '../../../src/maps/types';
+import { useTheme } from '../../../src/theme/ThemeContext';
+import { fontFamily } from '../../../src/theme/fonts';
+import { elevation, radius } from '../../../src/theme/tokens';
 
 export default function NavigationScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { station, navRoute, setNavRoute } = useJourney();
+  const { colors, isDark } = useTheme();
+  const insets = useSafeAreaInsets();
+  const { station, setStation, navRoute, setNavRoute } = useJourney();
+  const { vehicle, battery } = useVehicle();
   const mapRef = useRef<MapCanvasHandle>(null);
-  const { coord, location, speedKmh, ready } = useDeviceLocation({ watch: true, distanceInterval: 4 });
+  const { coord, location, speedKmh, ready, hasFix, error, refresh } = useDeviceLocation({
+    watch: true,
+    distanceInterval: 2,
+  });
+
   const [route, setRoute] = useState<NavRoute | null>(navRoute);
   const [follow, setFollow] = useState(true);
-  const pulse = useSharedValue(1);
+  const [perspective, setPerspective] = useState<MapPerspective>('nav3d');
+  const [recalcMsg, setRecalcMsg] = useState<string | null>(null);
+  const recalcLock = useRef(false);
 
   useEffect(() => {
-    pulse.value = withRepeat(withTiming(1.06, { duration: 900, easing: Easing.inOut(Easing.ease) }), -1, true);
-  }, []);
+    if (station?.id === id || !id) return;
+    fetchStationById(id, coord).then((s) => {
+      if (s) setStation(s);
+    });
+  }, [id]);
 
   useEffect(() => {
-    if (!station || !ready) return;
-    if (route?.coordinates?.length) return;
+    if (!station || !ready || !hasFix) return;
     let cancelled = false;
     (async () => {
-      const r = await fetchDrivingRoute(coord, {
-        latitude: station.latitude,
-        longitude: station.longitude,
-      });
+      // Mantém a alternativa escolhida no preview (não sobrescreve com a rota [0])
+      const end = navRoute?.coordinates?.[navRoute.coordinates.length - 1];
+      const matchesDestination =
+        !!navRoute &&
+        !!end &&
+        navRoute.coordinates.length > 1 &&
+        haversineKm(end.latitude, end.longitude, station.latitude, station.longitude) < 0.8;
+
+      if (matchesDestination) {
+        setRoute(navRoute);
+        return;
+      }
+
+      const r = await fetchDrivingRoute(
+        { latitude: coord.latitude, longitude: coord.longitude },
+        { latitude: station.latitude, longitude: station.longitude },
+      );
       if (cancelled) return;
       setRoute(r);
       setNavRoute(r);
@@ -57,178 +73,339 @@ export default function NavigationScreen() {
     return () => {
       cancelled = true;
     };
-  }, [station?.id, ready]);
+  }, [station?.id, ready, hasFix]);
 
-  const progress = useMemo(() => {
-    if (!route?.coordinates?.length) {
+  const lookAheadM = useMemo(() => {
+    const speed = typeof speedKmh === 'number' ? speedKmh : 0;
+    if (speed > 80) return 140;
+    if (speed > 50) return 110;
+    if (speed > 25) return 85;
+    return 65;
+  }, [speedKmh]);
+
+  const progress = useMemo(
+    () =>
+      computeNavProgress({
+        route,
+        user: coord,
+        deviceHeading: location.heading ?? null,
+        lookAheadM,
+      }),
+    [route, coord.latitude, coord.longitude, location.heading, lookAheadM],
+  );
+
+  /** Próximos passos = curvas detectadas na linha azul (não texto fixo do OSRM). */
+  const bannerStep = useMemo(() => {
+    type Upcoming = { step: NonNullable<typeof progress.step>; distanceM?: number };
+    const line =
+      progress.remainingLine.length > 2
+        ? progress.remainingLine
+        : route?.coordinates?.length
+          ? route.coordinates
+          : [];
+
+    if (line.length < 4) {
       return {
-        heading: location.heading ?? 0,
-        remainingKm: route?.distanceKm ?? station?.distance_km ?? 0,
-        remainingMin: route?.durationMin ?? station?.eta_min ?? 0,
-        line: route?.coordinates ?? [],
-        step: route?.steps?.[0] ?? null,
+        step: progress.step,
+        index: progress.stepIndex,
+        upcoming: [] as Upcoming[],
+        distanceM: progress.distanceToManeuverM,
       };
     }
-    const near = nearestPointOnRoute(route.coordinates, coord);
-    const remKm = remainingDistanceKm(route.coordinates, near.index);
-    const ratio = route.distanceKm > 0 ? remKm / route.distanceKm : 1;
-    const remMin = Math.max(1, Math.round((route.durationMin || 1) * ratio));
-    const step = nextStepForProgress(route.steps, coord);
-    return {
-      heading: location.heading ?? near.heading,
-      remainingKm: remKm,
-      remainingMin: remMin,
-      line: near.remainingCoordinates,
-      step,
-    };
-  }, [route, coord, location.heading, station]);
 
-  const stepUi = progress.step ? describeStep(progress.step) : null;
-  const speedStyle = useAnimatedStyle(() => ({ transform: [{ scale: pulse.value }] }));
+    const maneuvers = detectPathManeuvers(line, 0, { minTurnDeg: 30, minGapM: 40, max: 5 });
+    const turns = maneuvers.filter((m) => m.turnSide !== 'straight' || m.step.instruction.includes('Chegue'));
+    const current = turns[0] ?? maneuvers[maneuvers.length - 1];
+    const upcoming: Upcoming[] = turns.slice(1, 4).map((m) => ({
+      step: m.step,
+      distanceM: Math.max(30, m.distanceM),
+    }));
+
+    // Nome da via: tenta casar com step OSRM mais próximo (só rótulo)
+    const osrm = route?.steps ?? [];
+    if (current && osrm.length) {
+      let best = osrm[0];
+      let bestD = Number.POSITIVE_INFINITY;
+      for (const s of osrm) {
+        const d =
+          Math.abs(s.location.latitude - current.location.latitude) +
+          Math.abs(s.location.longitude - current.location.longitude);
+        if (d < bestD) {
+          bestD = d;
+          best = s;
+        }
+      }
+      if (best?.name) current.step.name = best.name;
+    }
+
+    return {
+      step: current?.step ?? progress.step,
+      index: progress.stepIndex,
+      upcoming,
+      distanceM: Math.max(10, current?.distanceM ?? progress.distanceToManeuverM),
+    };
+  }, [
+    progress.remainingLine,
+    progress.step,
+    progress.stepIndex,
+    progress.distanceToManeuverM,
+    route?.coordinates,
+    route?.steps,
+  ]);
+
+  const bannerDistanceM = bannerStep.distanceM ?? progress.distanceToManeuverM;
+
+  useEffect(() => {
+    if (!hasFix || !station || !route || progress.offRouteKm < 0.12 || recalcLock.current) return;
+    recalcLock.current = true;
+    setRecalcMsg('Recalculando rota…');
+    (async () => {
+      try {
+        const r = await fetchDrivingRoute(coord, {
+          latitude: station.latitude,
+          longitude: station.longitude,
+        });
+        setRoute(r);
+        setNavRoute(r);
+        setRecalcMsg('Rota atualizada');
+        setTimeout(() => setRecalcMsg(null), 1400);
+      } catch {
+        setRecalcMsg('Falha ao recalcular');
+        setTimeout(() => setRecalcMsg(null), 1800);
+      } finally {
+        setTimeout(() => {
+          recalcLock.current = false;
+        }, 4000);
+      }
+    })();
+  }, [progress.offRouteKm, station?.id, hasFix]);
+
+  const energy = useMemo(
+    () => estimateRouteEnergy(vehicle, battery, progress.remainingKm),
+    [vehicle, battery, progress.remainingKm],
+  );
+
+  const applyPerspective = (p: MapPerspective) => {
+    setPerspective(p);
+  };
 
   const onRecenter = () => {
     setFollow(true);
+    void refresh();
     mapRef.current?.recenter({
-      latitude: coord.latitude,
-      longitude: coord.longitude,
+      latitude: progress.snappedCoord.latitude,
+      longitude: progress.snappedCoord.longitude,
+      cameraLat: progress.cameraTarget.latitude,
+      cameraLng: progress.cameraTarget.longitude,
       heading: progress.heading,
-      tilt: true,
+      perspective,
     });
   };
 
   return (
-    <Screen>
-      <View style={{ flex: 1, backgroundColor: colors.dark }}>
-        <MapCanvas
-          ref={mapRef}
-          stations={station ? [station] : []}
-          height="100%"
-          tilt
-          followUser={follow}
-          showRoute
-          routeCoordinates={progress.line.length ? progress.line : route?.coordinates}
-          userCoord={coord}
-          userHeading={progress.heading}
-          focus={coord}
-          style={{ flex: 1 }}
-        />
+    <View style={{ flex: 1, backgroundColor: '#0B1220' }}>
+      <MapCanvas
+        ref={mapRef}
+        stations={station ? [station] : []}
+        height="100%"
+        perspective={perspective}
+        dark={isDark}
+        followUser={follow && hasFix}
+        navigationMode
+        showRoute
+        routeCoordinates={progress.remainingLine.length ? progress.remainingLine : route?.coordinates}
+        traveledCoordinates={progress.traveledLine}
+        userCoord={hasFix ? progress.snappedCoord : undefined}
+        userHeading={hasFix ? progress.heading : null}
+        cameraTarget={hasFix ? progress.cameraTarget : undefined}
+        focus={hasFix ? progress.snappedCoord : undefined}
+        hideUserMarker={!hasFix}
+        style={{ flex: 1 }}
+      />
 
-        <View style={styles.navCard}>
-          <Text style={styles.navSmall}>{stepUi?.banner ?? 'SIGA'}</Text>
-          <Text style={styles.navBig}>{stepUi?.title ?? 'Em direção ao posto'}</Text>
-          <Text style={styles.navRoad}>{stepUi?.road ?? station?.name}</Text>
+      {/* Topo: card flutuante, afastado das bordas */}
+      <View
+        pointerEvents="box-none"
+        style={[styles.topOverlay, { paddingTop: Math.max(insets.top, 12) + 8 }]}
+      >
+        <View style={styles.bannerWrap}>
+          <NavInstructionBanner
+            step={bannerStep.step}
+            distanceM={bannerDistanceM}
+            streetFallback={station?.name}
+            upcoming={bannerStep.upcoming}
+          />
         </View>
 
-        <Animated.View style={[styles.speed, speedStyle]}>
-          <Text style={styles.speedValue}>{speedKmh || '—'}</Text>
-          <Text style={styles.speedUnit}>km/h</Text>
-        </Animated.View>
-
-        {!follow ? (
-          <Pressable style={styles.followBtn} onPress={onRecenter}>
-            <Text style={styles.followText}>Recentralizar GPS</Text>
-          </Pressable>
-        ) : (
-          <Pressable style={styles.unfollow} onPress={() => setFollow(false)}>
-            <Text style={styles.unfollowText}>◎</Text>
-          </Pressable>
-        )}
-
-        <SafeAreaView edges={['bottom']} style={styles.bottom}>
-          <View style={styles.row}>
-            <View>
-              <Text style={styles.metric}>{progress.remainingKm.toFixed(1)} km</Text>
-              <Text style={styles.label}>restante</Text>
-            </View>
-            <View>
-              <Text style={styles.metric}>{progress.remainingMin} min</Text>
-              <Text style={styles.label}>tempo</Text>
-            </View>
-            <View>
-              <Text style={styles.metric}>{etaClock(progress.remainingMin)}</Text>
-              <Text style={styles.label}>ETA</Text>
-            </View>
+        <View style={styles.rightCol}>
+          <View style={[styles.perspGroup, elevation.float, { backgroundColor: colors.surface }]}>
+            <Pressable
+              onPress={() => applyPerspective('top')}
+              style={[styles.perspBtn, perspective === 'top' && styles.perspActive]}
+            >
+              <Icon name="map-outline" size={18} color={perspective === 'top' ? '#fff' : colors.ink} />
+              <Text
+                style={{
+                  fontSize: 10,
+                  fontFamily: fontFamily.bold,
+                  color: perspective === 'top' ? '#fff' : colors.ink,
+                  marginTop: 2,
+                }}
+              >
+                Topo
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => applyPerspective('nav3d')}
+              style={[styles.perspBtn, perspective === 'nav3d' && styles.perspActive]}
+            >
+              <Icon name="navigate" size={18} color={perspective === 'nav3d' ? '#fff' : colors.ink} />
+              <Text
+                style={{
+                  fontSize: 10,
+                  fontFamily: fontFamily.bold,
+                  color: perspective === 'nav3d' ? '#fff' : colors.ink,
+                  marginTop: 2,
+                }}
+              >
+                3D
+              </Text>
+            </Pressable>
           </View>
-          <Text style={styles.meta}>{station?.name}</Text>
-          <Button title="Cheguei" onPress={() => router.push(`/(customer)/arrival/${id}`)} />
-        </SafeAreaView>
+
+          <Pressable
+            style={[styles.iconFab, elevation.float, { backgroundColor: colors.surface }]}
+            onPress={onRecenter}
+          >
+            <Icon name="locate" size={22} color={colors.blue} />
+          </Pressable>
+
+          <Pressable
+            style={[styles.iconFab, elevation.float, { backgroundColor: colors.surface }]}
+            onPress={() => setFollow((f) => !f)}
+          >
+            <Icon name={follow ? 'lock-closed' : 'lock-open'} size={18} color={colors.ink} />
+          </Pressable>
+        </View>
       </View>
-    </Screen>
+
+      {recalcMsg ? (
+        <View style={[styles.toast, { top: Math.max(insets.top, 12) + 150, backgroundColor: colors.overlay }]}>
+          <Text style={{ color: '#fff', fontFamily: fontFamily.bold, fontSize: 12 }}>{recalcMsg}</Text>
+        </View>
+      ) : null}
+
+      {!hasFix ? (
+        <Pressable
+          style={[styles.gpsBanner, { top: Math.max(insets.top, 12) + 150, backgroundColor: '#000' }]}
+          onPress={() => void refresh()}
+        >
+          <Icon name="warning-outline" size={16} color="#FFC043" />
+          <Text style={{ color: '#fff', fontFamily: fontFamily.bold, flex: 1 }}>
+            {error ?? 'Ative a localização do dispositivo'}
+          </Text>
+          <Text style={{ color: colors.accent, fontFamily: fontFamily.bold }}>Tentar</Text>
+        </Pressable>
+      ) : null}
+
+      {progress.offRouteKm >= 0.08 && hasFix && !recalcMsg ? (
+        <View style={[styles.offRoute, { top: Math.max(insets.top, 12) + 150 }]}>
+          <Icon name="warning-outline" size={14} color="#FFC043" />
+          <Text style={{ color: '#fff', fontFamily: fontFamily.semibold, fontSize: 12 }}>Fora da rota</Text>
+        </View>
+      ) : null}
+
+      {/* Velocímetro — posição padrão Waze: baixo-esquerda, acima do dock */}
+      <View
+        pointerEvents="none"
+        style={[styles.speedAnchor, { bottom: Math.max(insets.bottom, 10) + 168 }]}
+      >
+        <NavSpeedometer speedKmh={speedKmh} />
+      </View>
+
+      <NavBottomDock
+        remainingKm={progress.remainingKm}
+        remainingMin={progress.remainingMin}
+        batteryPercent={energy.arrivalPercent}
+        batteryOk={energy.viable}
+        destination={station?.name}
+        onArrive={() => router.push(`/(customer)/arrival/${id}`)}
+        onEnd={() => router.replace('/(customer)/(tabs)/map')}
+      />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  navCard: {
+  topOverlay: {
     position: 'absolute',
     left: 14,
-    top: 54,
-    right: 110,
-    backgroundColor: colors.dark,
-    borderRadius: 20,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    shadowColor: '#000',
-    shadowOpacity: 0.35,
-    shadowRadius: 12,
-    elevation: 8,
+    right: 14,
+    top: 0,
+    flexDirection: 'row',
+    gap: 10,
+    alignItems: 'flex-start',
   },
-  navSmall: { color: colors.accent, fontWeight: '900', fontSize: 13, letterSpacing: 1 },
-  navBig: { color: colors.white, fontSize: 24, fontWeight: '900', marginTop: 4 },
-  navRoad: { color: 'rgba(255,255,255,0.65)', marginTop: 4, fontSize: 13 },
-  speed: {
-    position: 'absolute',
-    right: 16,
-    top: 54,
-    width: 76,
-    height: 76,
-    borderRadius: 38,
-    backgroundColor: colors.white,
+  bannerWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  rightCol: {
+    gap: 8,
+    alignItems: 'center',
+    paddingTop: 2,
+  },
+  perspGroup: {
+    borderRadius: 14,
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#E2E2E2',
+  },
+  perspBtn: {
+    width: 56,
+    paddingVertical: 8,
+    alignItems: 'center',
+    backgroundColor: 'transparent',
+  },
+  perspActive: { backgroundColor: '#000' },
+  iconFab: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 3,
-    borderColor: colors.blue,
-    shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 6,
   },
-  speedValue: { fontSize: 22, fontWeight: '900', color: colors.ink },
-  speedUnit: { fontSize: 10, color: colors.muted, fontWeight: '700' },
-  followBtn: {
+  speedAnchor: {
+    position: 'absolute',
+    left: 18,
+  },
+  gpsBanner: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    borderRadius: radius.pill,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  toast: {
     position: 'absolute',
     alignSelf: 'center',
-    bottom: 168,
-    backgroundColor: colors.blue,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: 999,
   },
-  followText: { color: '#fff', fontWeight: '800' },
-  unfollow: {
+  offRoute: {
     position: 'absolute',
-    right: 16,
-    bottom: 168,
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: colors.white,
+    alignSelf: 'center',
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(0,0,0,0.82)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
   },
-  unfollowText: { fontSize: 18, color: colors.blue, fontWeight: '800' },
-  bottom: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(255,255,255,0.97)',
-    padding: 16,
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-  },
-  row: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
-  metric: { fontSize: 18, fontWeight: '900', color: colors.ink },
-  label: { color: colors.muted, fontSize: 11, marginTop: 2 },
-  meta: { color: colors.muted, marginTop: 6, marginBottom: 8 },
 });

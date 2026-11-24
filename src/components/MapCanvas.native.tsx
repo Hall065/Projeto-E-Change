@@ -2,28 +2,49 @@ import React, { forwardRef, useEffect, useImperativeHandle, useRef } from 'react
 import { Platform, StyleSheet, Text, View } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE, type Region } from 'react-native-maps';
 import { colors } from '../theme/colors';
-import { hasGoogleMaps, mapConfig } from '../lib/config';
+import { hasGoogleMaps, hasMapbox, mapConfig } from '../lib/config';
 import type { StationWithMetrics } from '../types/database';
 import type { LatLng } from '../services/routing';
+import { PERSPECTIVE_PRESETS, type MapPerspective } from '../maps/types';
 
 export type MapCanvasHandle = {
-  recenter: (opts?: { latitude: number; longitude: number; heading?: number | null; tilt?: boolean }) => void;
+  recenter: (opts?: {
+    latitude: number;
+    longitude: number;
+    heading?: number | null;
+    tilt?: boolean;
+    perspective?: MapPerspective;
+    cameraLat?: number;
+    cameraLng?: number;
+  }) => void;
+  setPerspective: (perspective: MapPerspective) => void;
+  getProvider: () => 'google' | 'apple' | 'default';
 };
 
 type Props = {
   stations: StationWithMetrics[];
   height?: number | string;
+  /** @deprecated use perspective */
   tilt?: boolean;
+  perspective?: MapPerspective;
   followUser?: boolean;
   focus?: LatLng;
+  /** Centro da câmera (look-ahead) — puck fica no terço inferior no 3D */
+  cameraTarget?: LatLng;
   showPrices?: boolean;
   showRoute?: boolean;
   routeCoordinates?: LatLng[];
+  traveledCoordinates?: LatLng[];
+  alternativeRoutes?: LatLng[][];
   userCoord?: LatLng;
   userHeading?: number | null;
   onSelect?: (id: string) => void;
+  onMapPress?: (coord: LatLng) => void;
   style?: object;
   hideUserMarker?: boolean;
+  selectedStationId?: string | null;
+  dark?: boolean;
+  navigationMode?: boolean;
 };
 
 export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
@@ -31,91 +52,147 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     stations,
     height = 340,
     tilt,
+    perspective: perspectiveProp,
     followUser,
     focus,
+    cameraTarget,
     showPrices,
     showRoute,
     routeCoordinates,
+    traveledCoordinates,
+    alternativeRoutes,
     userCoord,
     userHeading,
     onSelect,
+    onMapPress,
     style,
     hideUserMarker,
+    selectedStationId,
+    navigationMode,
   },
   ref,
 ) {
   const mapRef = useRef<MapView>(null);
+  const perspectiveRef = useRef<MapPerspective>(perspectiveProp ?? (tilt ? 'nav3d' : 'top'));
   const origin = userCoord ?? mapConfig.defaultCenter;
   const destination = stations[0]
     ? { latitude: stations[0].latitude, longitude: stations[0].longitude }
     : null;
 
+  const perspective = perspectiveProp ?? (tilt ? 'nav3d' : 'top');
+  perspectiveRef.current = perspective;
+
+  const camLat = cameraTarget?.latitude ?? focus?.latitude ?? origin.latitude;
+  const camLng = cameraTarget?.longitude ?? focus?.longitude ?? origin.longitude;
+
   const region: Region = {
-    latitude: focus?.latitude ?? origin.latitude,
-    longitude: focus?.longitude ?? origin.longitude,
-    latitudeDelta: tilt ? 0.012 : 0.04,
-    longitudeDelta: tilt ? 0.012 : 0.04,
+    latitude: camLat,
+    longitude: camLng,
+    latitudeDelta: perspective === 'nav3d' ? 0.008 : 0.04,
+    longitudeDelta: perspective === 'nav3d' ? 0.008 : 0.04,
   };
 
-  const recenter = (opts?: { latitude: number; longitude: number; heading?: number | null; tilt?: boolean }) => {
-    const lat = opts?.latitude ?? origin.latitude;
-    const lng = opts?.longitude ?? origin.longitude;
-    const useTilt = opts?.tilt ?? tilt;
+  const applyCamera = (opts: {
+    latitude: number;
+    longitude: number;
+    heading?: number | null;
+    perspective: MapPerspective;
+    /** Troca Topo↔3D — mesma duração nos dois sentidos */
+    perspectiveTransition?: boolean;
+  }) => {
     if (!mapRef.current) return;
-    if (useTilt) {
-      mapRef.current.animateCamera(
-        {
-          center: { latitude: lat, longitude: lng },
-          pitch: 62,
-          heading: opts?.heading ?? userHeading ?? 0,
-          zoom: 17,
-          altitude: 520,
-        },
-        { duration: 450 },
-      );
-    } else {
-      mapRef.current.animateToRegion(
-        {
-          latitude: lat,
-          longitude: lng,
-          latitudeDelta: 0.035,
-          longitudeDelta: 0.035,
-        },
-        350,
-      );
-    }
+    const preset = PERSPECTIVE_PRESETS[opts.perspective];
+    // Só a perspectiva escolhida — não forçar 3D por navigationMode
+    const nav3d = opts.perspective === 'nav3d';
+    const duration = opts.perspectiveTransition ? 650 : followUser && nav3d ? 280 : 520;
+    mapRef.current.animateCamera(
+      {
+        center: { latitude: opts.latitude, longitude: opts.longitude },
+        pitch: nav3d ? Math.max(preset.pitch, 68) : 0,
+        heading: nav3d ? opts.heading ?? userHeading ?? 0 : 0,
+        zoom: nav3d ? Math.max(preset.zoom, 17.5) : preset.zoom,
+        altitude: nav3d ? 320 : 1400,
+      },
+      { duration },
+    );
   };
 
-  useImperativeHandle(ref, () => ({ recenter }));
+  useImperativeHandle(ref, () => ({
+    recenter: (opts) => {
+      const nextPerspective = opts?.perspective ?? perspectiveRef.current;
+      perspectiveRef.current = nextPerspective;
+      applyCamera({
+        latitude: opts?.cameraLat ?? opts?.latitude ?? camLat,
+        longitude: opts?.cameraLng ?? opts?.longitude ?? camLng,
+        heading: opts?.heading,
+        perspective: nextPerspective,
+      });
+    },
+    setPerspective: (p) => {
+      perspectiveRef.current = p;
+      applyCamera({
+        latitude: camLat,
+        longitude: camLng,
+        heading: userHeading,
+        perspective: p,
+        perspectiveTransition: true,
+      });
+    },
+    getProvider: () =>
+      hasGoogleMaps && Platform.OS === 'android' ? 'google' : Platform.OS === 'ios' ? 'apple' : 'default',
+  }));
 
   useEffect(() => {
     if (!followUser) return;
-    recenter({
-      latitude: origin.latitude,
-      longitude: origin.longitude,
+    applyCamera({
+      latitude: camLat,
+      longitude: camLng,
       heading: userHeading,
-      tilt: true,
+      perspective: perspectiveRef.current,
     });
-  }, [followUser, origin.latitude, origin.longitude, userHeading]);
+  }, [
+    followUser,
+    camLat,
+    camLng,
+    origin.latitude,
+    origin.longitude,
+    userHeading,
+    navigationMode,
+  ]);
 
   useEffect(() => {
-    if (followUser || !tilt) return;
-    recenter({
-      latitude: focus?.latitude ?? origin.latitude,
-      longitude: focus?.longitude ?? origin.longitude,
-      heading: userHeading ?? 20,
-      tilt: true,
+    perspectiveRef.current = perspective;
+    applyCamera({
+      latitude: camLat,
+      longitude: camLng,
+      heading: userHeading,
+      perspective,
+      perspectiveTransition: true,
     });
-  }, [tilt]);
+  }, [perspective]);
 
-  const line = routeCoordinates?.length
+  const remain = routeCoordinates?.length
     ? routeCoordinates
     : showRoute && destination
       ? [origin, destination]
       : [];
+  const traveled = traveledCoordinates ?? [];
+
+  const providerHint = hasGoogleMaps ? 'google' : hasMapbox ? 'mapbox-ready' : 'system';
 
   return (
-    <View style={[{ height: typeof height === 'number' ? height : undefined, flex: typeof height === 'number' ? undefined : 1, width: '100%', overflow: 'hidden' }, style]}>
+    <View
+      style={[
+        {
+          height: typeof height === 'number' ? height : undefined,
+          flex: typeof height === 'number' ? undefined : 1,
+          width: '100%',
+          overflow: 'hidden',
+        },
+        style,
+      ]}
+      accessibilityHint={`map-provider:${providerHint}`}
+    >
       <MapView
         ref={mapRef}
         style={StyleSheet.absoluteFill}
@@ -130,26 +207,53 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         scrollEnabled={!followUser}
         zoomEnabled
         toolbarEnabled={false}
+        onPress={(e) => {
+          const c = e.nativeEvent.coordinate;
+          if (c) onMapPress?.({ latitude: c.latitude, longitude: c.longitude });
+        }}
       >
-        {line.length > 1 && (
-          <>
-            <Polyline coordinates={line} strokeColor="rgba(15,18,14,0.25)" strokeWidth={10} />
-            <Polyline coordinates={line} strokeColor={colors.route} strokeWidth={5} />
-          </>
+        {(alternativeRoutes ?? []).map((coords, idx) =>
+          coords.length > 1 ? (
+            <Polyline key={`alt-${idx}`} coordinates={coords} strokeColor={colors.routeAlt} strokeWidth={4} />
+          ) : null,
         )}
+
+        {traveled.length > 1 && showRoute ? (
+          <Polyline coordinates={traveled} strokeColor="#9CA3AF" strokeWidth={5} />
+        ) : null}
+
+        {remain.length > 1 && showRoute ? (
+          <>
+            <Polyline coordinates={remain} strokeColor="rgba(15,18,14,0.28)" strokeWidth={12} />
+            <Polyline coordinates={remain} strokeColor={colors.route} strokeWidth={6} />
+          </>
+        ) : null}
 
         {!hideUserMarker && (
           <Marker
             coordinate={origin}
-            anchor={{ x: 0.5, y: 0.5 }}
+            anchor={{ x: 0.5, y: perspective === 'nav3d' ? 0.62 : 0.55 }}
             flat
             rotation={userHeading ?? 0}
-            tracksViewChanges={false}
+            tracksViewChanges={perspective === 'nav3d'}
+            zIndex={999}
           >
-            <View style={styles.userWrap}>
-              <View style={styles.userHalo} />
-              <View style={[styles.userArrow, tilt && styles.userArrowNav]} />
-            </View>
+            {perspective === 'nav3d' ? (
+              <View style={styles.userWrap3d}>
+                <View style={styles.userHalo3d} />
+                <View style={styles.shadow3d} />
+                <View style={styles.wazeOuter}>
+                  <View style={styles.wazeInner} />
+                </View>
+              </View>
+            ) : (
+              <View style={styles.userWrap}>
+                <View style={styles.userHalo} />
+                <View style={styles.wazeOuterFlat}>
+                  <View style={styles.wazeInnerFlat} />
+                </View>
+              </View>
+            )}
           </Marker>
         )}
 
@@ -162,12 +266,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             tracksViewChanges={false}
           >
             {showPrices ? (
-              <View style={styles.pricePin}>
+              <View style={[styles.pricePin, selectedStationId === s.id && styles.pricePinSelected]}>
                 <Text style={styles.priceText}>R$ {Number(s.min_price).toFixed(2).replace('.', ',')}</Text>
               </View>
             ) : (
-              <View style={styles.boltPin}>
-                <Text style={{ color: '#fff', fontSize: 13, fontWeight: '800' }}>⚡</Text>
+              <View style={[styles.boltPin, selectedStationId === s.id && { backgroundColor: colors.blue }]}>
+                <View style={styles.boltDot} />
               </View>
             )}
           </Marker>
@@ -178,41 +282,88 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 });
 
 const styles = StyleSheet.create({
-  userWrap: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  userWrap: { width: 56, height: 56, alignItems: 'center', justifyContent: 'center' },
   userHalo: {
     position: 'absolute',
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: 'rgba(47,111,237,0.18)',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(51,204,255,0.2)',
   },
-  userArrow: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: colors.blue,
-    borderWidth: 3,
-    borderColor: '#fff',
-  },
-  userArrowNav: {
+  /** Seta Waze 2D (Topo) — ciano #33CCFF + contorno branco */
+  wazeOuterFlat: {
     width: 0,
     height: 0,
-    borderLeftWidth: 9,
-    borderRightWidth: 9,
-    borderBottomWidth: 22,
+    borderLeftWidth: 14,
+    borderRightWidth: 14,
+    borderBottomWidth: 32,
     borderLeftColor: 'transparent',
     borderRightColor: 'transparent',
-    borderBottomColor: colors.blue,
-    backgroundColor: 'transparent',
-    borderRadius: 0,
-    borderWidth: 0,
+    borderBottomColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
     transform: [{ translateY: -2 }],
   },
+  wazeInnerFlat: {
+    position: 'absolute',
+    bottom: 4,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 10,
+    borderRightWidth: 10,
+    borderBottomWidth: 24,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: '#33CCFF',
+  },
+  /** Seta Waze 3D (navegação) */
+  userWrap3d: { width: 72, height: 72, alignItems: 'center', justifyContent: 'center' },
+  userHalo3d: {
+    position: 'absolute',
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(51,204,255,0.22)',
+  },
+  shadow3d: {
+    position: 'absolute',
+    bottom: 12,
+    width: 28,
+    height: 12,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0,0,0,0.28)',
+  },
+  wazeOuter: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 18,
+    borderRightWidth: 18,
+    borderBottomWidth: 40,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    transform: [{ translateY: -4 }],
+  },
+  wazeInner: {
+    position: 'absolute',
+    bottom: 5,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 13,
+    borderRightWidth: 13,
+    borderBottomWidth: 30,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: '#33CCFF',
+  },
+
   boltPin: {
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: colors.primary,
+    backgroundColor: '#000',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 3,
@@ -222,9 +373,19 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 4,
   },
+  boltDot: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 5,
+    borderRightWidth: 5,
+    borderBottomWidth: 10,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: '#fff',
+  },
   pricePin: {
-    backgroundColor: '#fff',
-    borderColor: colors.ink,
+    backgroundColor: '#000',
+    borderColor: '#000',
     borderWidth: 1.5,
     borderRadius: 14,
     paddingHorizontal: 10,
@@ -234,5 +395,9 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 3,
   },
-  priceText: { color: colors.ink, fontWeight: '900', fontSize: 12 },
+  pricePinSelected: {
+    borderColor: colors.blue,
+    borderWidth: 2,
+  },
+  priceText: { color: '#fff', fontWeight: '900', fontSize: 12 },
 });

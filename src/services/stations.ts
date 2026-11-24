@@ -1,5 +1,7 @@
-import { supabase } from '../lib/supabase';
+import { supabase, supabaseConfigured } from '../lib/supabase';
+import { getDemoStationById, getDemoStationsWithMetrics } from '../data/demoStations';
 import { etaMinutes, haversineKm } from '../lib/format';
+import { getCustomDestination, isCustomDestinationId } from './customDestination';
 import type { Connector, Station, StationWithMetrics } from '../types/database';
 
 const SAO_PAULO = { latitude: -23.5505, longitude: -46.6333 };
@@ -22,29 +24,55 @@ function withMetrics(station: Station, connectors: Connector[], origin = SAO_PAU
 }
 
 export async function fetchStations(origin = SAO_PAULO): Promise<StationWithMetrics[]> {
-  const { data: stations, error } = await supabase
-    .from('stations')
-    .select('*')
-    .eq('status', 'active')
-    .order('name');
+  if (!supabaseConfigured) return getDemoStationsWithMetrics(origin);
 
-  if (error) throw error;
+  try {
+    const { data: stations, error } = await supabase
+      .from('stations')
+      .select('*')
+      .eq('status', 'active')
+      .order('name');
 
-  const { data: connectors, error: cErr } = await supabase.from('connectors').select('*');
-  if (cErr) throw cErr;
+    if (error) throw error;
 
-  return (stations ?? [])
-    .map((s) => withMetrics(s as Station, (connectors ?? []).filter((c) => c.station_id === s.id) as Connector[], origin))
-    .sort((a, b) => (a.distance_km ?? 0) - (b.distance_km ?? 0));
+    const { data: connectors, error: cErr } = await supabase.from('connectors').select('*');
+    if (cErr) throw cErr;
+
+    const list = (stations ?? [])
+      .map((s) => withMetrics(s as Station, (connectors ?? []).filter((c) => c.station_id === s.id) as Connector[], origin))
+      .sort((a, b) => (a.distance_km ?? 0) - (b.distance_km ?? 0));
+
+    return list.length ? list : getDemoStationsWithMetrics(origin);
+  } catch {
+    return getDemoStationsWithMetrics(origin);
+  }
 }
 
 export async function fetchStationById(id: string, origin = SAO_PAULO): Promise<StationWithMetrics | null> {
-  const { data: station, error } = await supabase.from('stations').select('*').eq('id', id).maybeSingle();
-  if (error) throw error;
-  if (!station) return null;
-  const { data: connectors, error: cErr } = await supabase.from('connectors').select('*').eq('station_id', id);
-  if (cErr) throw cErr;
-  return withMetrics(station as Station, (connectors ?? []) as Connector[], origin);
+  if (isCustomDestinationId(id)) {
+    const custom = getCustomDestination(id);
+    if (!custom) return null;
+    const distance = haversineKm(origin.latitude, origin.longitude, custom.latitude, custom.longitude);
+    return {
+      ...custom,
+      distance_km: Number(distance.toFixed(1)),
+      eta_min: etaMinutes(distance),
+    };
+  }
+  if (id.startsWith('demo-') || !supabaseConfigured) {
+    return getDemoStationById(id, origin);
+  }
+
+  try {
+    const { data: station, error } = await supabase.from('stations').select('*').eq('id', id).maybeSingle();
+    if (error) throw error;
+    if (!station) return getDemoStationById(id, origin);
+    const { data: connectors, error: cErr } = await supabase.from('connectors').select('*').eq('station_id', id);
+    if (cErr) throw cErr;
+    return withMetrics(station as Station, (connectors ?? []) as Connector[], origin);
+  } catch {
+    return getDemoStationById(id, origin);
+  }
 }
 
 export async function fetchAllStationsAdmin() {

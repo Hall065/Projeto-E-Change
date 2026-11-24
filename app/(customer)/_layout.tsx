@@ -1,35 +1,25 @@
-import { Tabs } from 'expo-router';
-import { Text } from 'react-native';
-import { colors } from '../../src/theme/colors';
-
-function TabIcon({ label, focused }: { label: string; focused: boolean }) {
-  return <Text style={{ fontSize: 16, color: focused ? colors.primary : colors.muted }}>{label}</Text>;
-}
+import { Stack } from 'expo-router';
+import { useTheme } from '../../src/theme/ThemeContext';
 
 export default function CustomerLayout() {
+  const { colors } = useTheme();
   return (
-    <Tabs
+    <Stack
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: colors.primary,
-        tabBarInactiveTintColor: colors.muted,
-        tabBarStyle: { backgroundColor: colors.white, borderTopColor: colors.line },
-        tabBarLabelStyle: { fontWeight: '700', fontSize: 11 },
+        contentStyle: { backgroundColor: colors.bg },
+        animation: 'slide_from_right',
       }}
     >
-      <Tabs.Screen name="map" options={{ title: 'Map', tabBarIcon: ({ focused }) => <TabIcon label="⌖" focused={focused} /> }} />
-      <Tabs.Screen name="search" options={{ title: 'Search', tabBarIcon: ({ focused }) => <TabIcon label="⌕" focused={focused} /> }} />
-      <Tabs.Screen name="favorites" options={{ title: 'Favorites', tabBarIcon: ({ focused }) => <TabIcon label="★" focused={focused} /> }} />
-      <Tabs.Screen name="history" options={{ title: 'History', tabBarIcon: ({ focused }) => <TabIcon label="◷" focused={focused} /> }} />
-      <Tabs.Screen name="profile" options={{ title: 'Profile', tabBarIcon: ({ focused }) => <TabIcon label="○" focused={focused} /> }} />
-      <Tabs.Screen name="station/[id]" options={{ href: null }} />
-      <Tabs.Screen name="reserve/[id]" options={{ href: null }} />
-      <Tabs.Screen name="route/[id]" options={{ href: null }} />
-      <Tabs.Screen name="navigation/[id]" options={{ href: null }} />
-      <Tabs.Screen name="arrival/[id]" options={{ href: null }} />
-      <Tabs.Screen name="session/[id]" options={{ href: null }} />
-      <Tabs.Screen name="bill/[id]" options={{ href: null }} />
-      <Tabs.Screen name="payment/[id]" options={{ href: null }} />
-    </Tabs>
+      <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="station/[id]" />
+      <Stack.Screen name="reserve/[id]" />
+      <Stack.Screen name="route/[id]" />
+      <Stack.Screen name="navigation/[id]" options={{ animation: 'fade' }} />
+      <Stack.Screen name="arrival/[id]" />
+      <Stack.Screen name="session/[id]" />
+      <Stack.Screen name="bill/[id]" />
+      <Stack.Screen name="payment/[id]" />
+    </Stack>
   );
 }

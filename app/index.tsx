@@ -14,8 +14,8 @@ export default function Index() {
     );
   }
 
-  if (!session) return <Redirect href="/splash" />;
   if (profile?.role === 'admin') return <Redirect href="/(admin)" />;
   if (profile?.role === 'owner') return <Redirect href="/(owner)" />;
-  return <Redirect href="/(customer)/map" />;
+  // App utilizável sem login (mapa/rotas demo); auth só para reserva/pagamento
+  return <Redirect href="/(customer)/(tabs)/map" />;
 }

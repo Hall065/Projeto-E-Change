@@ -2,11 +2,11 @@ import React, { useCallback, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Card, EmptyState, Screen, Subtitle, Title } from '../../src/components/ui';
-import { useAuth } from '../../src/context/AuthContext';
-import { formatBRL } from '../../src/lib/format';
-import { fetchUserHistory } from '../../src/services/journey';
-import { colors } from '../../src/theme/colors';
+import { Card, EmptyState, Screen, Subtitle, Title } from '../../../src/components/ui';
+import { useAuth } from '../../../src/context/AuthContext';
+import { formatBRL } from '../../../src/lib/format';
+import { fetchUserHistory } from '../../../src/services/journey';
+import { colors } from '../../../src/theme/colors';
 
 export default function HistoryScreen() {
   const { user } = useAuth();

@@ -2,14 +2,14 @@ import React, { useCallback, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { StationCard } from '../../src/components/StationCard';
-import { EmptyState, Screen, Subtitle, Title } from '../../src/components/ui';
-import { useAuth } from '../../src/context/AuthContext';
-import { useJourney } from '../../src/context/JourneyContext';
-import { fetchFavorites } from '../../src/services/journey';
-import { fetchStations } from '../../src/services/stations';
-import type { StationWithMetrics } from '../../src/types/database';
-import { colors } from '../../src/theme/colors';
+import { StationCard } from '../../../src/components/StationCard';
+import { EmptyState, Screen, Subtitle, Title } from '../../../src/components/ui';
+import { useAuth } from '../../../src/context/AuthContext';
+import { useJourney } from '../../../src/context/JourneyContext';
+import { fetchFavorites } from '../../../src/services/journey';
+import { fetchStations } from '../../../src/services/stations';
+import type { StationWithMetrics } from '../../../src/types/database';
+import { colors } from '../../../src/theme/colors';
 
 export default function FavoritesScreen() {
   const { user } = useAuth();

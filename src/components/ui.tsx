@@ -11,7 +11,10 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
+import { Icon } from './Icon';
 import { colors } from '../theme/colors';
+import { fontFamily } from '../theme/fonts';
+import { radius } from '../theme/tokens';
 
 export function Screen({ children, style, dark }: { children: React.ReactNode; style?: ViewStyle; dark?: boolean }) {
   return <View style={[styles.screen, dark && { backgroundColor: colors.dark }, style]}>{children}</View>;
@@ -19,7 +22,7 @@ export function Screen({ children, style, dark }: { children: React.ReactNode; s
 
 export function BrandMark({ light }: { light?: boolean }) {
   return (
-    <Text style={[styles.brand, light && { color: colors.white }]}>
+    <Text style={[styles.brand, { fontFamily: fontFamily.extrabold }, light && { color: colors.white }]}>
       E-CHARGE <Text style={{ color: light ? colors.accent : colors.secondary }}>MAP</Text>
     </Text>
   );
@@ -28,17 +31,25 @@ export function BrandMark({ light }: { light?: boolean }) {
 export function LeafLogo({ size = 56 }: { size?: number }) {
   return (
     <View style={[styles.leaf, { width: size, height: size, borderRadius: size / 2 }]}>
-      <Text style={{ fontSize: size * 0.45 }}>🌿</Text>
+      <Icon name="flash" size={size * 0.42} color="#fff" />
     </View>
   );
 }
 
 export function Title({ children, light }: { children: React.ReactNode; light?: boolean }) {
-  return <Text style={[styles.title, light && { color: colors.white }]}>{children}</Text>;
+  return (
+    <Text style={[styles.title, { fontFamily: fontFamily.extrabold }, light && { color: colors.white }]}>
+      {children}
+    </Text>
+  );
 }
 
 export function Subtitle({ children, light }: { children: React.ReactNode; light?: boolean }) {
-  return <Text style={[styles.subtitle, light && { color: '#C6D0BE' }]}>{children}</Text>;
+  return (
+    <Text style={[styles.subtitle, { fontFamily: fontFamily.medium }, light && { color: '#C6D0BE' }]}>
+      {children}
+    </Text>
+  );
 }
 
 export function Button({
@@ -69,22 +80,44 @@ export function Button({
       ]}
     >
       {loading ? (
-        <ActivityIndicator color={ghost ? colors.primary : colors.white} />
+        <ActivityIndicator color={ghost ? colors.ink : '#fff'} />
       ) : (
-        <Text style={[styles.btnText, ghost && { color: colors.primary }]}>{title}</Text>
+        <Text
+          style={[
+            styles.btnText,
+            { fontFamily: fontFamily.bold },
+            ghost && { color: colors.ink },
+          ]}
+        >
+          {title}
+        </Text>
       )}
     </Pressable>
   );
 }
 
 export function Input(props: TextInputProps) {
-  return <TextInput placeholderTextColor={colors.muted} {...props} style={[styles.input, props.style]} />;
+  return (
+    <TextInput
+      placeholderTextColor={colors.muted}
+      {...props}
+      style={[styles.input, { fontFamily: fontFamily.medium }, props.style]}
+    />
+  );
 }
 
 export function Chip({ label, active, onPress }: { label: string; active?: boolean; onPress?: () => void }) {
   return (
     <Pressable onPress={onPress} style={[styles.chip, active && styles.chipActive]}>
-      <Text style={[styles.chipText, active && { color: colors.white }]}>{label}</Text>
+      <Text
+        style={[
+          styles.chipText,
+          { fontFamily: fontFamily.bold },
+          active && { color: '#fff' },
+        ]}
+      >
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -96,8 +129,8 @@ export function Card({ children, style }: { children: React.ReactNode; style?: V
 export function Stat({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.stat}>
-      <Text style={styles.statLabel}>{label}</Text>
-      <Text style={styles.statValue}>{value}</Text>
+      <Text style={[styles.statLabel, { fontFamily: fontFamily.semibold }]}>{label}</Text>
+      <Text style={[styles.statValue, { fontFamily: fontFamily.extrabold }]}>{value}</Text>
     </View>
   );
 }
@@ -105,23 +138,19 @@ export function Stat({ label, value }: { label: string; value: string }) {
 export function EmptyState({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
     <View style={styles.empty}>
-      <Text style={styles.emptyTitle}>{title}</Text>
-      {!!subtitle && <Text style={styles.subtitle}>{subtitle}</Text>}
+      <Text style={[styles.emptyTitle, { fontFamily: fontFamily.bold }]}>{title}</Text>
+      {!!subtitle && <Text style={[styles.subtitle, { fontFamily: fontFamily.medium }]}>{subtitle}</Text>}
     </View>
   );
 }
 
 export function FadeBlock({ children, delay = 0 }: { children: React.ReactNode; delay?: number }) {
-  return (
-    <Animated.View entering={FadeInUp.delay(delay).springify()}>
-      {children}
-    </Animated.View>
-  );
+  return <Animated.View entering={FadeInUp.delay(delay).springify()}>{children}</Animated.View>;
 }
 
 export function DarkHero({ children }: { children: React.ReactNode }) {
   return (
-    <LinearGradient colors={[colors.dark, '#161C14', '#1E2918']} style={{ flex: 1 }}>
+    <LinearGradient colors={['#000000', '#121212', '#1F1F1F']} style={{ flex: 1 }}>
       {children}
     </LinearGradient>
   );
@@ -133,44 +162,33 @@ export function FadeInCard({ children, delay = 0 }: { children: React.ReactNode;
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
-  brand: { fontSize: 12, fontWeight: '900', letterSpacing: 2, color: colors.ink, marginBottom: 12 },
+  brand: { fontSize: 12, letterSpacing: 2, color: colors.ink, marginBottom: 12 },
   leaf: {
-    backgroundColor: colors.primary,
+    backgroundColor: colors.ink,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: colors.accent,
-    shadowOpacity: 0.35,
-    shadowRadius: 16,
-    elevation: 6,
   },
-  title: { fontSize: 28, fontWeight: '800', color: colors.ink, letterSpacing: -0.8 },
+  title: { fontSize: 28, color: colors.ink, letterSpacing: -0.8 },
   subtitle: { fontSize: 14, color: colors.muted, marginTop: 6, lineHeight: 20 },
   btn: {
-    backgroundColor: colors.primary,
-    borderRadius: 16,
+    backgroundColor: colors.ink,
+    borderRadius: radius.md,
     paddingVertical: 16,
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 8,
-    shadowColor: colors.primary,
-    shadowOpacity: 0.25,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 3,
   },
   btnGhost: {
     backgroundColor: colors.ghost,
     borderWidth: 1,
     borderColor: colors.ghostBorder,
-    shadowOpacity: 0,
-    elevation: 0,
   },
-  btnText: { color: colors.white, fontWeight: '800', fontSize: 15 },
+  btnText: { color: '#fff', fontSize: 15 },
   input: {
     backgroundColor: colors.white,
     borderColor: colors.line,
     borderWidth: 1,
-    borderRadius: 14,
+    borderRadius: radius.md,
     paddingHorizontal: 16,
     paddingVertical: 15,
     fontSize: 15,
@@ -185,32 +203,27 @@ const styles = StyleSheet.create({
     marginRight: 8,
     marginBottom: 8,
   },
-  chipActive: { backgroundColor: colors.primary },
-  chipText: { color: colors.primary, fontWeight: '700', fontSize: 13 },
+  chipActive: { backgroundColor: colors.ink },
+  chipText: { color: colors.ink, fontSize: 13 },
   card: {
     backgroundColor: colors.white,
-    borderRadius: 18,
+    borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: colors.line,
     padding: 16,
     marginTop: 10,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 2,
   },
   stat: {
     flex: 1,
     backgroundColor: colors.white,
-    borderRadius: 14,
+    borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.line,
     padding: 12,
     minWidth: '30%',
   },
-  statLabel: { fontSize: 11, color: colors.muted, fontWeight: '600' },
-  statValue: { fontSize: 16, fontWeight: '800', color: colors.ink, marginTop: 4 },
+  statLabel: { fontSize: 11, color: colors.muted },
+  statValue: { fontSize: 16, color: colors.ink, marginTop: 4 },
   empty: { padding: 24, alignItems: 'center' },
-  emptyTitle: { fontSize: 16, fontWeight: '800', color: colors.ink },
+  emptyTitle: { fontSize: 16, color: colors.ink },
 });

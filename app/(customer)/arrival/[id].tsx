@@ -48,8 +48,7 @@ export default function ArrivalScreen() {
           <Title>You have arrived</Title>
           <Subtitle>{station?.name ?? 'Station'}</Subtitle>
           <Card style={{ alignItems: 'center' }}>
-            <Text style={styles.bolt}>⚡</Text>
-            <Text style={styles.big}>Ready to charge</Text>
+            <Text style={styles.big}>Pronto para carregar</Text>
             <Text style={styles.meta}>Connector #{connector?.label ?? '—'} · {connector?.connector_type ?? '—'} · {connector?.max_power_kw ?? '—'} kW · {connector?.status ?? '—'}</Text>
           </Card>
           <View style={styles.stats}>

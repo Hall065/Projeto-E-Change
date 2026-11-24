@@ -45,7 +45,7 @@ export default function StationDetailsScreen() {
         <ImageBackground source={{ uri: station.photo_url || HERO }} style={styles.hero}>
           <LinearGradient colors={['transparent', 'rgba(15,18,14,0.75)']} style={styles.heroShade}>
             <Text style={styles.heroTitle}>{station.name}</Text>
-            <Text style={styles.heroMeta}>{Number(station.rating_avg).toFixed(1)} ★ · {station.rating_count} reviews</Text>
+            <Text style={styles.heroMeta}>{Number(station.rating_avg).toFixed(1)} / 5 · {station.rating_count} avaliações</Text>
           </LinearGradient>
         </ImageBackground>
         <ScrollView contentContainerStyle={styles.pad}>
@@ -64,7 +64,15 @@ export default function StationDetailsScreen() {
           </View>
           <Text style={styles.address}>{station.address} · {station.city}/{station.state}</Text>
           <Button
-            title="Reserve Connector"
+            title="Traçar rota"
+            onPress={() => {
+              setStation(station);
+              router.push(`/(customer)/route/${station.id}`);
+            }}
+          />
+          <Button
+            title="Reservar conector"
+            ghost
             onPress={() => {
               setConnectorId(free?.id ?? station.connectors?.[0]?.id ?? null);
               router.push(`/(customer)/reserve/${station.id}`);
