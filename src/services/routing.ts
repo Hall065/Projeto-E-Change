@@ -174,10 +174,21 @@ function parseOsrmRoute(route: any, from: LatLng, to: LatLng, index: number): Na
 function refineStepsFromGeometry(steps: RouteStep[], coordinates: LatLng[]) {
   if (coordinates.length < 3 || !steps.length) return;
   for (const step of steps) {
-    const typeHint = `${step.instruction}`.toLowerCase();
-    if (typeHint.includes('chegue') || typeHint.includes('rotatória')) continue;
+    const typeHint = `${step.instruction} ${step.modifier ?? ''}`.toLowerCase();
+    if (typeHint.includes('chegue') || typeHint.includes('arrive') || typeHint.includes('rotatória')) continue;
     const geo = turnAtPathPoint(coordinates, step.location);
-    if (!geo || Math.abs(geo.turnDeg) < 20) continue;
+    if (!geo || Math.abs(geo.turnDeg) < 28) {
+      // Sem curva clara no path → em frente (evita seta estática errada do texto OSRM)
+      if (geo && Math.abs(geo.turnDeg) < 28) {
+        step.turnDeg = geo.turnDeg;
+        step.turnSide = 'straight';
+        if (!typeHint.includes('depart') && !typeHint.includes('parta')) {
+          step.instruction = instructionFromTurn('straight');
+          step.modifier = 'straight';
+        }
+      }
+      continue;
+    }
     step.turnDeg = geo.turnDeg;
     step.turnSide = geo.turnSide;
     step.instruction = instructionFromTurn(geo.turnSide);
@@ -196,44 +207,26 @@ function segmentLengthM(a: LatLng, b: LatLng) {
   return haversineKm(a.latitude, a.longitude, b.latitude, b.longitude) * 1000;
 }
 
-/** Bearing médio olhando ~`meters` atrás/à frente de `index` na polyline. */
-function bearingAround(coordinates: LatLng[], index: number, meters: number, forward: boolean) {
-  if (coordinates.length < 2) return 0;
-  let left = meters;
-  let i = index;
-  const pts: LatLng[] = [coordinates[index]];
-  if (forward) {
-    while (left > 0 && i < coordinates.length - 1) {
-      const d = segmentLengthM(coordinates[i], coordinates[i + 1]);
-      pts.push(coordinates[i + 1]);
-      left -= d;
-      i += 1;
-      if (pts.length > 8) break;
-    }
-  } else {
-    while (left > 0 && i > 0) {
-      const d = segmentLengthM(coordinates[i - 1], coordinates[i]);
-      pts.unshift(coordinates[i - 1]);
-      left -= d;
-      i -= 1;
-      if (pts.length > 8) break;
-    }
-  }
-  if (pts.length < 2) {
-    const j = Math.min(coordinates.length - 1, Math.max(0, forward ? index + 1 : index - 1));
-    return forward ? bearing(coordinates[index], coordinates[j]) : bearing(coordinates[j], coordinates[index]);
-  }
-  return forward
-    ? bearing(pts[0], pts[pts.length - 1])
-    : bearing(pts[0], pts[pts.length - 1]);
-}
-
 function turnAtPathPoint(coordinates: LatLng[], point: LatLng) {
   if (coordinates.length < 3) return null;
   const at = nearestPointOnRoute(coordinates, point);
-  const idx = Math.max(1, Math.min(coordinates.length - 2, at.index));
-  const bIn = bearingAround(coordinates, idx, 28, false);
-  const bOut = bearingAround(coordinates, idx, 28, true);
+  // Prefere o vértice mais próximo do ponto da manobra (não só o início do segmento)
+  let idx = at.index;
+  if (at.index < coordinates.length - 1) {
+    const d0 = haversineKm(point.latitude, point.longitude, coordinates[at.index].latitude, coordinates[at.index].longitude);
+    const d1 = haversineKm(
+      point.latitude,
+      point.longitude,
+      coordinates[at.index + 1].latitude,
+      coordinates[at.index + 1].longitude,
+    );
+    if (d1 < d0) idx = at.index + 1;
+  }
+  idx = Math.max(1, Math.min(coordinates.length - 2, idx));
+  const prev = pointAlongPath(coordinates, idx, 40, false);
+  const next = pointAlongPath(coordinates, idx, 40, true);
+  const bIn = bearing(prev, coordinates[idx]);
+  const bOut = bearing(coordinates[idx], next);
   const turnDeg = turnDeltaDeg(bIn, bOut);
   return { turnDeg, turnSide: turnSideFromDelta(turnDeg), index: idx };
 }
@@ -249,31 +242,143 @@ export type PathManeuver = {
 };
 
 /**
+ * Ponto ~`meters` atrás/à frente na polyline (para medir o ângulo real da curva).
+ */
+function pointAlongPath(coordinates: LatLng[], index: number, meters: number, forward: boolean): LatLng {
+  if (!coordinates.length) return { latitude: 0, longitude: 0 };
+  let left = Math.max(1, meters);
+  let i = index;
+  let cur = coordinates[index];
+  if (forward) {
+    while (left > 0 && i < coordinates.length - 1) {
+      const next = coordinates[i + 1];
+      const d = segmentLengthM(cur, next);
+      if (d >= left || d < 1e-6) {
+        const t = d < 1e-6 ? 1 : left / d;
+        return {
+          latitude: cur.latitude + (next.latitude - cur.latitude) * t,
+          longitude: cur.longitude + (next.longitude - cur.longitude) * t,
+        };
+      }
+      left -= d;
+      cur = next;
+      i += 1;
+    }
+    return coordinates[coordinates.length - 1];
+  }
+  while (left > 0 && i > 0) {
+    const prev = coordinates[i - 1];
+    const d = segmentLengthM(prev, cur);
+    if (d >= left || d < 1e-6) {
+      const t = d < 1e-6 ? 1 : left / d;
+      return {
+        latitude: cur.latitude + (prev.latitude - cur.latitude) * t,
+        longitude: cur.longitude + (prev.longitude - cur.longitude) * t,
+      };
+    }
+    left -= d;
+    cur = prev;
+    i -= 1;
+  }
+  return coordinates[0];
+}
+
+/** Distância acumulada ao longo da rota até o índice (e ponto opcional no segmento). */
+function distanceToIndex(coordinates: LatLng[], toIndex: number, fromIndex = 0) {
+  let total = 0;
+  const start = Math.max(0, fromIndex);
+  const end = Math.min(coordinates.length - 1, toIndex);
+  for (let i = start; i < end; i++) {
+    total += segmentLengthM(coordinates[i], coordinates[i + 1]);
+  }
+  return total;
+}
+
+function attachStreetName(step: RouteStep, osrmSteps?: RouteStep[]) {
+  if (!osrmSteps?.length) return;
+  let best: RouteStep | null = null;
+  let bestD = Number.POSITIVE_INFINITY;
+  for (const s of osrmSteps) {
+    if (!s.name) continue;
+    const d =
+      haversineKm(step.location.latitude, step.location.longitude, s.location.latitude, s.location.longitude) *
+      1000;
+    if (d < bestD) {
+      bestD = d;
+      best = s;
+    }
+  }
+  // Só aceita nome se o step OSRM estiver perto da curva (~80 m)
+  if (best && bestD < 80) step.name = best.name;
+}
+
+/**
  * Detecta curvas reais na polyline azul (fonte da verdade do mapa).
- * Usado nos “próximos passos” — não depende de texto pré-setado do OSRM.
+ * Olha o ângulo entre o trecho que chega e o que sai — não usa texto fixo do OSRM.
  */
 export function detectPathManeuvers(
   coordinates: LatLng[],
   fromIndex = 0,
-  opts?: { minTurnDeg?: number; minGapM?: number; max?: number },
+  opts?: { minTurnDeg?: number; minGapM?: number; max?: number; osrmSteps?: RouteStep[] },
 ): PathManeuver[] {
-  const minTurn = opts?.minTurnDeg ?? 32;
-  const minGap = opts?.minGapM ?? 45;
-  const max = opts?.max ?? 6;
-  if (coordinates.length < 4) return [];
+  const minTurn = opts?.minTurnDeg ?? 38;
+  const minGap = opts?.minGapM ?? 55;
+  const max = opts?.max ?? 8;
+  const lookM = 40; // metros para amostrar bearing entrada/saída
+  if (coordinates.length < 3) return [];
 
+  const startIdx = Math.max(1, fromIndex);
   const out: PathManeuver[] = [];
-  let distFromStart = 0;
   let lastEmitDist = -minGap;
 
-  for (let i = Math.max(1, fromIndex); i < coordinates.length - 1; i++) {
-    distFromStart += segmentLengthM(coordinates[i - 1], coordinates[i]);
-    const bIn = bearingAround(coordinates, i, 30, false);
-    const bOut = bearingAround(coordinates, i, 30, true);
+  // Distância acumulada desde fromIndex → cada vértice à frente
+  const cum = new Array(coordinates.length).fill(0) as number[];
+  for (let i = fromIndex; i < coordinates.length - 1; i++) {
+    cum[i + 1] = cum[i] + segmentLengthM(coordinates[i], coordinates[i + 1]);
+  }
+
+  for (let i = startIdx; i < coordinates.length - 1; i++) {
+    const distFromStart = cum[i];
+    // Ignora micro-vértices logo na saída (ruído do snap)
+    if (distFromStart < 12) continue;
+
+    const prev = pointAlongPath(coordinates, i, lookM, false);
+    const next = pointAlongPath(coordinates, i, lookM, true);
+    const bIn = bearing(prev, coordinates[i]);
+    const bOut = bearing(coordinates[i], next);
     const turnDeg = turnDeltaDeg(bIn, bOut);
     const abs = Math.abs(turnDeg);
     if (abs < minTurn) continue;
-    if (distFromStart - lastEmitDist < minGap) continue;
+    if (distFromStart - lastEmitDist < minGap) {
+      // Se a curva atual é bem mais forte que a última emitida no mesmo cluster, substitui
+      const last = out[out.length - 1];
+      if (last && distFromStart - last.distanceM < minGap && abs > Math.abs(last.turnDeg) + 12) {
+        const turnSide = turnSideFromDelta(turnDeg);
+        if (turnSide === 'straight') continue;
+        const location = coordinates[i];
+        const step: RouteStep = {
+          instruction: instructionFromTurn(turnSide),
+          distanceM: Math.round(distFromStart),
+          durationS: 0,
+          name: '',
+          modifier: turnSide === 'u-turn' ? 'uturn' : turnSide,
+          location,
+          turnDeg,
+          turnSide,
+        };
+        attachStreetName(step, opts?.osrmSteps);
+        out[out.length - 1] = {
+          location,
+          index: i,
+          turnDeg,
+          turnSide,
+          distanceM: Math.round(distFromStart),
+          step,
+        };
+        lastEmitDist = distFromStart;
+      }
+      continue;
+    }
 
     const turnSide = turnSideFromDelta(turnDeg);
     if (turnSide === 'straight') continue;
@@ -281,7 +386,7 @@ export function detectPathManeuvers(
     const location = coordinates[i];
     const step: RouteStep = {
       instruction: instructionFromTurn(turnSide),
-      distanceM: 0,
+      distanceM: Math.round(distFromStart),
       durationS: 0,
       name: '',
       modifier: turnSide === 'u-turn' ? 'uturn' : turnSide,
@@ -289,6 +394,7 @@ export function detectPathManeuvers(
       turnDeg,
       turnSide,
     };
+    attachStreetName(step, opts?.osrmSteps);
     out.push({
       location,
       index: i,
@@ -301,30 +407,93 @@ export function detectPathManeuvers(
     if (out.length >= max) break;
   }
 
-  // Destino final
   const end = coordinates[coordinates.length - 1];
-  let endDist = 0;
-  for (let i = Math.max(0, fromIndex); i < coordinates.length - 1; i++) {
-    endDist += segmentLengthM(coordinates[i], coordinates[i + 1]);
-  }
-  out.push({
-    location: end,
-    index: coordinates.length - 1,
-    turnDeg: 0,
-    turnSide: 'straight',
-    distanceM: Math.round(endDist),
-    step: {
+  const endDist = distanceToIndex(coordinates, coordinates.length - 1, fromIndex);
+  // Evita “Chegue” duplicado se a última curva já é o destino
+  const last = out[out.length - 1];
+  if (!last || last.index < coordinates.length - 2 || endDist - last.distanceM > 25) {
+    const arriveStep: RouteStep = {
       instruction: 'Chegue ao destino',
-      distanceM: 0,
+      distanceM: Math.round(endDist),
       durationS: 0,
       name: 'Destino',
       location: end,
       turnSide: 'straight',
       turnDeg: 0,
-    },
-  });
+      modifier: 'arrive',
+    };
+    out.push({
+      location: end,
+      index: coordinates.length - 1,
+      turnDeg: 0,
+      turnSide: 'straight',
+      distanceM: Math.round(endDist),
+      step: arriveStep,
+    });
+  } else {
+    last.step.instruction = 'Chegue ao destino';
+    last.step.name = last.step.name || 'Destino';
+    last.step.modifier = 'arrive';
+  }
 
   return out;
+}
+
+/**
+ * Guia ao vivo: manobras à frente do usuário, com distâncias atualizadas.
+ * As setas seguem o caminho azul — não uma lista estática.
+ */
+export function liveManeuverGuide(
+  coordinates: LatLng[],
+  user: LatLng,
+  opts?: { osrmSteps?: RouteStep[]; minTurnDeg?: number; max?: number },
+): {
+  current: PathManeuver | null;
+  upcoming: PathManeuver[];
+  distanceToCurrentM: number;
+  fromIndex: number;
+} {
+  if (!coordinates.length) {
+    return { current: null, upcoming: [], distanceToCurrentM: 0, fromIndex: 0 };
+  }
+
+  const near = nearestPointOnRoute(coordinates, user);
+  const fromIndex = near.index;
+  const maneuvers = detectPathManeuvers(coordinates, fromIndex, {
+    minTurnDeg: opts?.minTurnDeg ?? 38,
+    minGapM: 55,
+    max: opts?.max ?? 8,
+    osrmSteps: opts?.osrmSteps,
+  });
+
+  // Distância até cada manobra = distância ao longo da rota até o vértice
+  // (já calculada desde fromIndex em distanceM). Pula curvas já “passadas”.
+  const ahead = maneuvers.filter((m) => {
+    if (m.distanceM > 14) return true;
+    // Curva imediata ainda conta se for manobra real (não arrive)
+    return m.turnSide !== 'straight' && !m.step.instruction.includes('Chegue');
+  });
+
+  // Se a próxima curva está a <12 m e é virada, considera concluída e avança
+  let list = ahead;
+  while (
+    list.length > 1 &&
+    list[0].distanceM < 12 &&
+    list[0].turnSide !== 'straight' &&
+    !list[0].step.instruction.includes('Chegue')
+  ) {
+    list = list.slice(1);
+  }
+
+  const current = list[0] ?? null;
+  const upcoming = list.slice(1, 4);
+
+  return {
+    current,
+    upcoming,
+    distanceToCurrentM: Math.max(10, current?.distanceM ?? 0),
+    fromIndex,
+  };
 }
 
 function fallbackRoute(from: LatLng, to: LatLng): NavRoute {

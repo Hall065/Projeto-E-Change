@@ -1,13 +1,16 @@
 import { haversineKm } from './format';
-import { mapConfig } from './config';
+import { mapConfig, SENAI_LUIZ_VARGA } from './config';
 import type { LatLng } from '../services/routing';
 
-const SP_HUB: LatLng = mapConfig.defaultCenter;
+const CAMPUS: LatLng = {
+  latitude: SENAI_LUIZ_VARGA.latitude,
+  longitude: SENAI_LUIZ_VARGA.longitude,
+};
 
 export type OpsOrigin = {
   /** Sempre a coordenada usada no mapa / GPS do usuário quando disponível */
   coord: LatLng;
-  /** Origem para cálculo de distância dos postos demo (pode ser SP se o catálogo for só SP) */
+  /** Origem para cálculo de distância dos postos */
   stationOrigin: LatLng;
   mode: 'gps' | 'fallback';
   label: string;
@@ -16,30 +19,32 @@ export type OpsOrigin = {
 
 /**
  * Prioriza a localização real do dispositivo.
- * Postos demo ficam em SP: se o usuário estiver longe, o mapa/rota usam o GPS real
- * e as distâncias até os postos refletem isso (sem fingir que ele está em SP).
+ * Sem GPS (bloqueado no PC do SENAI, permissão negada, etc.) → campus Luiz Varga / Limeira.
  */
 export function resolveOpsOrigin(
   user: LatLng,
-  opts?: { hasFix?: boolean },
+  opts?: { hasFix?: boolean; isFallback?: boolean },
 ): OpsOrigin {
   const hasFix = opts?.hasFix ?? true;
-  if (!hasFix) {
+  const isFallback = opts?.isFallback ?? false;
+
+  if (!hasFix || isFallback) {
     return {
-      coord: SP_HUB,
-      stationOrigin: SP_HUB,
+      coord: CAMPUS,
+      stationOrigin: CAMPUS,
       mode: 'fallback',
-      label: 'Aguardando GPS',
+      label: mapConfig.fallbackCampus.label,
       stationsFar: false,
     };
   }
 
-  const d = haversineKm(user.latitude, user.longitude, SP_HUB.latitude, SP_HUB.longitude);
+  const d = haversineKm(user.latitude, user.longitude, CAMPUS.latitude, CAMPUS.longitude);
   return {
     coord: user,
     stationOrigin: user,
     mode: 'gps',
     label: 'GPS do dispositivo',
-    stationsFar: d > 80,
+    // Região Limeira / vizinhas — longe se > ~60 km do campus
+    stationsFar: d > 60,
   };
 }

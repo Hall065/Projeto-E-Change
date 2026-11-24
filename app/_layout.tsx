@@ -1,5 +1,5 @@
-import React from 'react';
-import { ActivityIndicator, View } from 'react-native';
+import React, { useEffect } from 'react';
+import { Platform } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useFonts } from 'expo-font';
@@ -20,15 +20,15 @@ function RootNavigator() {
 }
 
 export default function RootLayout() {
-  const [loaded] = useFonts(fontAssets);
+  // Fontes em paralelo — não bloqueia a UI (evita splash preto longo)
+  useFonts(fontAssets);
 
-  if (!loaded) {
-    return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#000' }}>
-        <ActivityIndicator color="#fff" />
-      </View>
-    );
-  }
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    void import('../src/components/MapCanvas').then((m) => {
+      m.prefetchMapLibre?.();
+    });
+  }, []);
 
   return (
     <ThemeProvider>

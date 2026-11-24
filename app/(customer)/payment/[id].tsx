@@ -1,126 +1,105 @@
-import React, { useEffect, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useMemo } from 'react';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import * as Clipboard from 'expo-clipboard';
-import QRCode from 'react-native-qrcode-svg';
-import Animated, { FadeInDown } from 'react-native-reanimated';
-import { Button, Card, Chip, Screen, Subtitle, Title } from '../../../src/components/ui';
-import { useAuth } from '../../../src/context/AuthContext';
+import { Button, Screen } from '../../../src/components/ui';
 import { useJourney } from '../../../src/context/JourneyContext';
-import { formatBRL } from '../../../src/lib/format';
-import { hasMercadoPago } from '../../../src/lib/config';
-import { createPayment, markPaymentPaid } from '../../../src/services/journey';
-import { createPixCharge } from '../../../src/services/pix';
-import type { PaymentMethod } from '../../../src/types/database';
-import { colors } from '../../../src/theme/colors';
+import { formatBRL, formatPriceKwh } from '../../../src/lib/format';
+import { getDemoSession } from '../../../src/services/demoSession';
+import { useTheme } from '../../../src/theme/ThemeContext';
 
-export default function PaymentScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
-  const { user } = useAuth();
-  const { session, payment, setPayment, resetJourney } = useJourney();
-  const [method, setMethod] = useState<PaymentMethod>('pix');
-  const [loading, setLoading] = useState(false);
-  const [pixCode, setPixCode] = useState<string>('');
-  const [provider, setProvider] = useState<'local' | 'mercadopago'>('local');
-  const amount = Number(session?.final_cost ?? session?.estimated_cost ?? 60.13);
+export default function PaymentReceiptScreen() {
+  const rawId = useLocalSearchParams<{ id: string }>().id;
+  const id = rawId ? decodeURIComponent(String(rawId)) : '';
+  const { colors } = useTheme();
+  const { station, session, connectorId, resetJourney } = useJourney();
 
-  useEffect(() => {
-    const boot = async () => {
-      const charge = await createPixCharge({
-        amount,
-        description: `Recarga E-Charge Map #${(session?.id ?? id).slice(0, 8)}`,
-        sessionId: session?.id ?? String(id),
-      });
-      setPixCode(charge.qrValue);
-      setProvider(charge.provider);
+  const resolved = session ?? (id ? getDemoSession(id) : null);
+  const connector = (station?.connectors ?? []).find(
+    (c) => c.id === (connectorId ?? resolved?.connector_id),
+  );
 
-      if (!user || !session?.id || payment) return;
-      try {
-        const p = await createPayment({
-          sessionId: session.id,
-          userId: user.id,
-          amount,
-          method: 'pix',
-          pixPayload: charge.payload,
-        });
-        setPayment(p);
-      } catch (e) {
-        console.warn(e);
-      }
-    };
-    boot();
-  }, [user, session?.id]);
+  const energy = Number(resolved?.energy_kwh ?? 0);
+  const price = Number(connector?.price_per_kwh ?? station?.min_price ?? 1.85);
+  const rawTotal = resolved?.final_cost ?? resolved?.estimated_cost ?? energy * price;
+  const total = Number.isFinite(Number(rawTotal)) ? Number(rawTotal) : 0;
+  const minutes = Number(resolved?.elapsed_minutes ?? 0);
 
-  const copy = async () => {
-    await Clipboard.setStringAsync(pixCode || payment?.pix_payload || '');
-    Alert.alert('Pix', 'Código copia-e-cola copiado!');
-  };
+  const paidAt = useMemo(
+    () =>
+      new Date().toLocaleString('pt-BR', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    [],
+  );
 
-  const pay = async () => {
-    try {
-      setLoading(true);
-      if (payment?.id) {
-        const paid = await markPaymentPaid(payment.id);
-        setPayment(paid);
-      }
-      Alert.alert('Pagamento confirmado', 'Obrigado! Sua recarga foi finalizada.', [
-        {
-          text: 'Voltar ao mapa',
-          onPress: () => {
-            resetJourney();
-            router.replace('/(customer)/map');
-          },
-        },
-      ]);
-    } catch (e: any) {
-      Alert.alert('Pagamento', e.message ?? 'Falha no pagamento');
-    } finally {
-      setLoading(false);
-    }
+  const nfNumber = useMemo(() => {
+    const seed = String(resolved?.id ?? id ?? 'NF')
+      .replace(/\W/g, '')
+      .slice(-8)
+      .toUpperCase();
+    return `NF-ECM-${seed || '00000000'}`;
+  }, [resolved?.id, id]);
+
+  const lines = [
+    { label: 'Nº da nota', value: nfNumber },
+    { label: 'Data', value: paidAt },
+    { label: 'Posto', value: station?.name ?? 'E-Charge Map' },
+    {
+      label: 'Conector',
+      value: connector ? `${connector.label} · ${connector.connector_type}` : '—',
+    },
+    { label: 'Energia', value: `${energy.toFixed(1)} kWh` },
+    { label: 'Tarifa', value: formatPriceKwh(price) },
+    { label: 'Duração', value: `${minutes} min` },
+    { label: 'Forma de pagamento', value: 'Pix' },
+    { label: 'Status', value: 'Pago' },
+  ];
+
+  const goMap = () => {
+    resetJourney();
+    router.replace('/(customer)/(tabs)/map');
   };
 
   return (
     <Screen>
       <SafeAreaView style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={styles.pad}>
-          <Title>Pay with Pix</Title>
-          <Subtitle>
-            {provider === 'mercadopago'
-              ? 'Cobrança gerada via Mercado Pago'
-              : hasMercadoPago
-                ? 'Fallback local (MP indisponível)'
-                : 'Pix local EMV — configure MP no .env para produção'}
-          </Subtitle>
-          <Animated.View entering={FadeInDown.duration(400)}>
-            <Card style={{ alignItems: 'center' }}>
-              <Text style={styles.label}>Total</Text>
-              <Text style={styles.total}>{formatBRL(amount)}</Text>
-            </Card>
-          </Animated.View>
-          <View style={styles.chips}>
-            <Chip label="Pix" active={method === 'pix'} onPress={() => setMethod('pix')} />
-            <Chip label="Credit card" active={method === 'card'} onPress={() => setMethod('card')} />
+          <View style={styles.hero}>
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>✓</Text>
+            </View>
+            <Text style={[styles.title, { color: colors.ink }]}>Pagamento aprovado</Text>
+            <Text style={[styles.sub, { color: colors.muted }]}>Nota fiscal da sua recarga</Text>
           </View>
-          {method === 'pix' ? (
-            <Animated.View entering={FadeInDown.delay(100).duration(400)}>
-              <Card style={{ alignItems: 'center' }}>
-                <View style={styles.qrWrap}>
-                  {!!pixCode && <QRCode value={pixCode} size={190} backgroundColor="#fff" color="#0B0D0A" />}
-                </View>
-                <Text style={styles.pix} numberOfLines={3}>{pixCode}</Text>
-                <Button title="Copy Key" ghost onPress={copy} />
-              </Card>
-            </Animated.View>
-          ) : (
-            <Card>
-              <Text style={styles.label}>Cartão tokenizado</Text>
-              <Text style={styles.meta}>
-                Em produção: Stripe Elements / Mercado Pago Card Form. Nunca armazenamos PAN/CVV.
-              </Text>
-            </Card>
-          )}
-          <Button title="I have paid" onPress={pay} loading={loading} />
+
+          <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+            {lines.map((line) => (
+              <View key={line.label} style={styles.row}>
+                <Text style={[styles.label, { color: colors.muted }]}>{line.label}</Text>
+                <Text
+                  style={[
+                    styles.value,
+                    { color: line.label === 'Status' ? '#06C167' : colors.ink },
+                  ]}
+                >
+                  {line.value}
+                </Text>
+              </View>
+            ))}
+            <View style={[styles.divider, { backgroundColor: colors.line }]} />
+            <Text style={[styles.label, { color: colors.muted }]}>Total pago</Text>
+            <Text style={[styles.total, { color: colors.ink }]}>{formatBRL(total)}</Text>
+            <View style={styles.okBadge}>
+              <Text style={styles.okText}>Transação concluída com sucesso</Text>
+            </View>
+          </View>
+
+          <Button title="Voltar ao mapa" onPress={goMap} />
         </ScrollView>
       </SafeAreaView>
     </Screen>
@@ -129,17 +108,55 @@ export default function PaymentScreen() {
 
 const styles = StyleSheet.create({
   pad: { padding: 20, paddingBottom: 40 },
-  label: { color: colors.muted, fontSize: 12 },
-  total: { fontSize: 36, fontWeight: '900', color: colors.primary, marginTop: 4 },
-  chips: { flexDirection: 'row', marginTop: 12 },
-  qrWrap: {
-    padding: 16,
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.line,
-    marginTop: 4,
+  hero: { alignItems: 'center', marginBottom: 18, marginTop: 8 },
+  badge: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+    backgroundColor: '#06C167',
   },
-  pix: { marginTop: 12, color: colors.muted, fontSize: 11, textAlign: 'center' },
-  meta: { color: colors.muted, marginTop: 10, fontSize: 13, lineHeight: 20 },
+  badgeText: { color: '#fff', fontSize: 28, fontWeight: '800' },
+  title: { fontSize: 26, fontWeight: '900', letterSpacing: -0.4 },
+  sub: { marginTop: 4, fontSize: 14 },
+  card: {
+    borderRadius: 20,
+    padding: 18,
+    marginBottom: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 10,
+    gap: 12,
+  },
+  label: { fontSize: 14 },
+  value: {
+    fontWeight: '700',
+    maxWidth: '58%',
+    textAlign: 'right',
+  },
+  divider: {
+    height: StyleSheet.hairlineWidth,
+    marginVertical: 10,
+  },
+  total: {
+    fontSize: 34,
+    marginTop: 4,
+    letterSpacing: -0.8,
+    fontWeight: '900',
+  },
+  okBadge: {
+    marginTop: 14,
+    alignSelf: 'flex-start',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: 'rgba(6,193,103,0.12)',
+  },
+  okText: { color: '#06C167', fontWeight: '700' },
 });

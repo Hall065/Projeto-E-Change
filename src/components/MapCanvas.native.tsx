@@ -1,7 +1,8 @@
-import React, { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { Platform, StyleSheet, Text, View } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE, type Region } from 'react-native-maps';
 import { colors } from '../theme/colors';
+import { cellDegForLatitudeDelta, clusterStations } from '../lib/clusterStations';
 import { hasGoogleMaps, hasMapbox, mapConfig } from '../lib/config';
 import type { StationWithMetrics } from '../types/database';
 import type { LatLng } from '../services/routing';
@@ -20,6 +21,9 @@ export type MapCanvasHandle = {
   setPerspective: (perspective: MapPerspective) => void;
   getProvider: () => 'google' | 'apple' | 'default';
 };
+
+/** No-op no native — prefetch só existe no web (CDN MapLibre). */
+export function prefetchMapLibre() {}
 
 type Props = {
   stations: StationWithMetrics[];
@@ -85,12 +89,19 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const camLat = cameraTarget?.latitude ?? focus?.latitude ?? origin.latitude;
   const camLng = cameraTarget?.longitude ?? focus?.longitude ?? origin.longitude;
 
+  const [latDelta, setLatDelta] = useState(perspective === 'nav3d' ? 0.008 : 0.04);
+
   const region: Region = {
     latitude: camLat,
     longitude: camLng,
-    latitudeDelta: perspective === 'nav3d' ? 0.008 : 0.04,
-    longitudeDelta: perspective === 'nav3d' ? 0.008 : 0.04,
+    latitudeDelta: perspective === 'nav3d' ? 0.008 : latDelta,
+    longitudeDelta: perspective === 'nav3d' ? 0.008 : latDelta,
   };
+
+  const clustered = useMemo(
+    () => clusterStations(stations, cellDegForLatitudeDelta(latDelta)),
+    [stations, latDelta],
+  );
 
   const applyCamera = (opts: {
     latitude: number;
@@ -207,6 +218,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         scrollEnabled={!followUser}
         zoomEnabled
         toolbarEnabled={false}
+        onRegionChangeComplete={(r) => {
+          if (r?.latitudeDelta) setLatDelta(r.latitudeDelta);
+        }}
         onPress={(e) => {
           const c = e.nativeEvent.coordinate;
           if (c) onMapPress?.({ latitude: c.latitude, longitude: c.longitude });
@@ -257,25 +271,52 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           </Marker>
         )}
 
-        {stations.map((s) => (
-          <Marker
-            key={s.id}
-            coordinate={{ latitude: s.latitude, longitude: s.longitude }}
-            title={s.name}
-            onPress={() => onSelect?.(s.id)}
-            tracksViewChanges={false}
-          >
-            {showPrices ? (
-              <View style={[styles.pricePin, selectedStationId === s.id && styles.pricePinSelected]}>
-                <Text style={styles.priceText}>R$ {Number(s.min_price).toFixed(2).replace('.', ',')}</Text>
-              </View>
-            ) : (
-              <View style={[styles.boltPin, selectedStationId === s.id && { backgroundColor: colors.blue }]}>
-                <View style={styles.boltDot} />
-              </View>
-            )}
-          </Marker>
-        ))}
+        {clustered.map((item) => {
+          if (item.type === 'cluster') {
+            return (
+              <Marker
+                key={item.id}
+                coordinate={{ latitude: item.latitude, longitude: item.longitude }}
+                onPress={() => {
+                  mapRef.current?.animateToRegion(
+                    {
+                      latitude: item.latitude,
+                      longitude: item.longitude,
+                      latitudeDelta: Math.max(latDelta / 2.4, 0.02),
+                      longitudeDelta: Math.max(latDelta / 2.4, 0.02),
+                    },
+                    280,
+                  );
+                }}
+                tracksViewChanges={false}
+              >
+                <View style={styles.clusterPin}>
+                  <Text style={styles.clusterText}>{item.count}</Text>
+                </View>
+              </Marker>
+            );
+          }
+          const s = item.station;
+          return (
+            <Marker
+              key={s.id}
+              coordinate={{ latitude: s.latitude, longitude: s.longitude }}
+              title={s.name}
+              onPress={() => onSelect?.(s.id)}
+              tracksViewChanges={false}
+            >
+              {showPrices ? (
+                <View style={[styles.pricePin, selectedStationId === s.id && styles.pricePinSelected]}>
+                  <Text style={styles.priceText}>R$ {Number(s.min_price).toFixed(2).replace('.', ',')}</Text>
+                </View>
+              ) : (
+                <View style={[styles.boltPin, selectedStationId === s.id && { backgroundColor: colors.blue }]}>
+                  <View style={styles.boltDot} />
+                </View>
+              )}
+            </Marker>
+          );
+        })}
       </MapView>
     </View>
   );
@@ -400,4 +441,16 @@ const styles = StyleSheet.create({
     borderWidth: 2,
   },
   priceText: { color: '#fff', fontWeight: '900', fontSize: 12 },
+  clusterPin: {
+    minWidth: 40,
+    height: 40,
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    backgroundColor: colors.blue,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 3,
+    borderColor: '#fff',
+  },
+  clusterText: { color: '#fff', fontWeight: '900', fontSize: 14 },
 });

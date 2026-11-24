@@ -113,13 +113,17 @@ export function formatManeuverDistance(meters: number) {
 export function maneuverKind(step: RouteStep | null): 'left' | 'right' | 'straight' | 'u-turn' | 'roundabout' | 'arrive' | 'depart' {
   if (!step) return 'straight';
   const t = `${step.instruction} ${step.modifier ?? ''}`.toLowerCase();
-  if (t.includes('chegue') || t.includes('arrive')) return 'arrive';
+  if (t.includes('chegue') || t.includes('arrive') || step.modifier === 'arrive') return 'arrive';
   if (t.includes('rotatória') || t.includes('roundabout')) return 'roundabout';
-  if (t.includes('parta') || t.includes('depart')) return 'depart';
-  // Preferir lado calculado no path (geometria / bearings OSRM)
-  if (step.turnSide === 'left' || step.turnSide === 'right' || step.turnSide === 'u-turn' || step.turnSide === 'straight') {
+  // Geometria da rota manda na seta (esquerda/direita/retorno/em frente)
+  if (step.turnSide === 'left' || step.turnSide === 'right' || step.turnSide === 'u-turn') {
     return step.turnSide;
   }
+  if (step.turnSide === 'straight') {
+    if (t.includes('parta') || t.includes('depart')) return 'depart';
+    return 'straight';
+  }
+  if (t.includes('parta') || t.includes('depart')) return 'depart';
   if (t.includes('retorno') || t.includes('u-turn') || t.includes('uturn')) return 'u-turn';
   if (t.includes('esquerda') || t.includes('left')) return 'left';
   if (t.includes('direita') || t.includes('right')) return 'right';

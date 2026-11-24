@@ -45,6 +45,8 @@ export type ThemeColors = {
   ink: string;
   muted: string;
   primary: string;
+  /** Texto/ícone em cima de primary/ink (botão sólido) */
+  onPrimary: string;
   secondary: string;
   accent: string;
   light: string;
@@ -79,6 +81,7 @@ export const lightColors: ThemeColors = {
   ink: '#000000',
   muted: '#6B6B6B',
   primary: '#000000',
+  onPrimary: '#FFFFFF',
   secondary: '#276EF1',
   accent: '#06C167',
   light: '#EEEEEE',
@@ -109,50 +112,41 @@ export const lightColors: ThemeColors = {
 };
 
 export const darkColors: ThemeColors = {
-  ink: '#FFFFFF',
-  muted: '#AFAFAF',
+  ink: '#F5F5F5',
+  muted: '#A0A0A0',
+  /** Botão sólido claro no tema preto — texto usa onPrimary */
   primary: '#FFFFFF',
+  onPrimary: '#000000',
   secondary: '#276EF1',
   accent: '#06C167',
   light: '#2B2B2B',
-  bg: '#000000',
-  white: '#121212',
-  surface: '#1F1F1F',
-  line: '#333333',
+  bg: '#0A0A0A',
+  white: '#FFFFFF',
+  surface: '#1A1A1A',
+  line: '#2E2E2E',
   dark: '#000000',
-  darkCard: '#121212',
-  map: '#1A1A1A',
-  blue: '#276EF1',
-  route: '#276EF1',
+  darkCard: '#141414',
+  map: '#121212',
+  blue: '#4B8BFF',
+  route: '#4B8BFF',
   routeAlt: '#666666',
   danger: '#FF695F',
   warning: '#FFC043',
-  ghost: '#2B2B2B',
+  ghost: '#1F1F1F',
   ghostBorder: '#3A3A3A',
-  soft: '#2B2B2B',
+  soft: '#222222',
   star: '#FFC043',
   battery: '#06C167',
   batteryLow: '#FF695F',
   overlay: 'rgba(0,0,0,0.65)',
-  tabBar: '#121212',
-  searchBg: '#1F1F1F',
-  searchText: '#FFFFFF',
-  whereTo: '#2B2B2B',
-  whereToText: '#FFFFFF',
+  tabBar: '#111111',
+  searchBg: '#1A1A1A',
+  searchText: '#F5F5F5',
+  whereTo: '#222222',
+  whereToText: '#F5F5F5',
 };
 
-/** Legacy admin/owner screens */
+/** Legacy admin/owner screens (sempre claro) */
 export const colors = {
   ...lightColors,
-  primary: '#000000',
-  secondary: '#276EF1',
-  accent: '#06C167',
-  bg: '#F6F6F6',
-  line: '#E2E2E2',
-  dark: '#000000',
-  darkCard: '#1F1F1F',
-  map: '#E8E8E8',
-  ghost: '#F3F3F3',
-  ghostBorder: '#E2E2E2',
-  soft: '#F6F6F6',
 } as const;

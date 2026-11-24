@@ -32,10 +32,10 @@ export default function SearchScreen() {
   const { colors, isDark } = useTheme();
   const { setStation } = useJourney();
   const { vehicle } = useVehicle();
-  const { coord: rawCoord, location, ready, hasFix } = useDeviceLocation({ watch: true, distanceInterval: 20 });
+  const { coord: rawCoord, location, ready, hasFix, isFallback } = useDeviceLocation({ watch: true, distanceInterval: 20 });
   const ops = useMemo(
-    () => resolveOpsOrigin(rawCoord, { hasFix }),
-    [rawCoord.latitude, rawCoord.longitude, hasFix],
+    () => resolveOpsOrigin(rawCoord, { hasFix, isFallback }),
+    [rawCoord.latitude, rawCoord.longitude, hasFix, isFallback],
   );
   const coord = ops.coord;
 
@@ -211,12 +211,12 @@ export default function SearchScreen() {
                             console.warn('[search] custom destination failed', e);
                           }
                         }}
-                        style={[styles.suggestBtn, { backgroundColor: colors.ink }]}
+                        style={[styles.suggestBtn, { backgroundColor: colors.primary }]}
                       >
-                        <Icon name="navigate" size={14} color={isDark ? '#000' : '#fff'} />
+                        <Icon name="navigate" size={14} color={colors.onPrimary} />
                         <Text
                           style={{
-                            color: isDark ? '#000' : '#fff',
+                            color: colors.onPrimary,
                             fontFamily: fontFamily.bold,
                             fontSize: 12,
                           }}

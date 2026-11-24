@@ -30,14 +30,18 @@ export default function FavoritesScreen() {
         return;
       }
       const all = await fetchStations();
-      const ids = new Set(favs.map((f: any) => f.station_id));
+      const ids = new Set(favs.map((f: { station_id: string }) => f.station_id));
       setStations(all.filter((s) => ids.has(s.id)));
     } finally {
       setLoading(false);
     }
   }, [user]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load]),
+  );
 
   return (
     <Screen>
@@ -46,10 +50,15 @@ export default function FavoritesScreen() {
           contentContainerStyle={styles.pad}
           refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={colors.primary} />}
         >
-          <Title>Favorites</Title>
-          <Subtitle>Stations you saved for quick access.</Subtitle>
+          <Title>Favoritos</Title>
+          <Subtitle>Postos salvos para acesso rápido.</Subtitle>
           {!user && <EmptyState title="Faça login" subtitle="Salve postos favoritos na sua conta." />}
-          {user && !stations.length && <EmptyState title="Nenhum favorito" subtitle="Favorite postos na tela de detalhes (próxima iteração rápida: use Search)." />}
+          {user && !stations.length && (
+            <EmptyState
+              title="Nenhum favorito"
+              subtitle="Abra um posto no mapa e toque na estrela para salvar."
+            />
+          )}
           {stations.map((s) => (
             <StationCard
               key={s.id}
@@ -57,6 +66,9 @@ export default function FavoritesScreen() {
               onPress={() => {
                 setStation(s);
                 router.push(`/(customer)/station/${s.id}`);
+              }}
+              onFavoriteChange={(favorite) => {
+                if (!favorite) setStations((prev) => prev.filter((x) => x.id !== s.id));
               }}
             />
           ))}

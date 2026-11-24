@@ -1,9 +1,10 @@
 import React, { useEffect } from 'react';
-import { ImageBackground, StyleSheet, Text, View } from 'react-native';
-import { Link, router } from 'expo-router';
+import { ImageBackground, Pressable, StyleSheet, Text, View } from 'react-native';
+import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, {
   Easing,
+  FadeInUp,
   useAnimatedStyle,
   useSharedValue,
   withDelay,
@@ -11,18 +12,21 @@ import Animated, {
 } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Button, LeafLogo } from '../../src/components/ui';
-import { colors } from '../../src/theme/colors';
+import { fontFamily } from '../../src/theme/fonts';
 
 const BG =
   'https://images.unsplash.com/photo-1593941707882-a5bba14938c7?auto=format&fit=crop&w=1200&q=80';
 
 export default function WelcomeScreen() {
   const opacity = useSharedValue(0);
-  const translateY = useSharedValue(24);
+  const translateY = useSharedValue(28);
 
   useEffect(() => {
     opacity.value = withTiming(1, { duration: 700 });
-    translateY.value = withDelay(120, withTiming(0, { duration: 700, easing: Easing.out(Easing.cubic) }));
+    translateY.value = withDelay(
+      100,
+      withTiming(0, { duration: 720, easing: Easing.out(Easing.cubic) }),
+    );
   }, []);
 
   const anim = useAnimatedStyle(() => ({
@@ -31,21 +35,31 @@ export default function WelcomeScreen() {
   }));
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.dark }}>
+    <View style={{ flex: 1, backgroundColor: '#0A0A0A' }}>
       <ImageBackground source={{ uri: BG }} style={styles.bg} resizeMode="cover">
-        <LinearGradient colors={['rgba(15,18,14,0.35)', 'rgba(15,18,14,0.82)', '#0F120E']} style={styles.shade}>
+        <LinearGradient
+          colors={['rgba(10,10,10,0.25)', 'rgba(10,10,10,0.55)', '#0A0A0A']}
+          style={styles.shade}
+        >
           <SafeAreaView style={styles.safe}>
             <Animated.View style={[styles.hero, anim]}>
               <LeafLogo size={64} />
-              <Text style={styles.brand}>E-Charge Map</Text>
-              <Text style={styles.title}>Drive electric.{"\n"}Go further.</Text>
-              <Text style={styles.sub}>Find stations, compare prices, reserve and pay — all in one place.</Text>
+              <Text style={[styles.brand, { fontFamily: fontFamily.bold }]}>E-CHARGE MAP</Text>
+              <Text style={[styles.title, { fontFamily: fontFamily.extrabold }]}>
+                Dirija elétrico.{"\n"}Vá mais longe.
+              </Text>
+              <Text style={[styles.sub, { fontFamily: fontFamily.medium }]}>
+                Encontre postos, compare preços, reserve e pague — tudo em um só lugar.
+              </Text>
             </Animated.View>
-            <View style={styles.actions}>
-              <Button title="Get Started" onPress={() => router.push('/(auth)/register')} />
-              <Button title="Sign In" ghost onPress={() => router.push('/(auth)/login')} />
-              <Link href="/(customer)/(tabs)/map" style={styles.link}>Explorar mapa</Link>
-            </View>
+
+            <Animated.View entering={FadeInUp.delay(280).duration(450)} style={styles.actions}>
+              <Button title="Criar conta" onPress={() => router.push('/(auth)/register')} />
+              <Button title="Entrar" ghost onPress={() => router.push('/(auth)/login')} />
+              <Pressable onPress={() => router.replace('/(customer)/(tabs)/map')} style={styles.linkWrap}>
+                <Text style={[styles.link, { fontFamily: fontFamily.bold }]}>Explorar mapa</Text>
+              </Pressable>
+            </Animated.View>
           </SafeAreaView>
         </LinearGradient>
       </ImageBackground>
@@ -57,10 +71,35 @@ const styles = StyleSheet.create({
   bg: { flex: 1 },
   shade: { flex: 1 },
   safe: { flex: 1, justifyContent: 'space-between' },
-  hero: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 28 },
-  brand: { marginTop: 14, color: colors.light, fontWeight: '800', letterSpacing: 1 },
-  title: { fontSize: 36, fontWeight: '900', color: colors.white, textAlign: 'center', marginTop: 16, lineHeight: 42 },
-  sub: { color: '#D5DEC9', textAlign: 'center', marginTop: 14, lineHeight: 22, fontSize: 15, maxWidth: 320 },
+  hero: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 28,
+  },
+  brand: {
+    marginTop: 14,
+    color: 'rgba(255,255,255,0.5)',
+    letterSpacing: 2,
+    fontSize: 11,
+  },
+  title: {
+    fontSize: 36,
+    color: '#fff',
+    textAlign: 'center',
+    marginTop: 16,
+    lineHeight: 42,
+    letterSpacing: -0.8,
+  },
+  sub: {
+    color: 'rgba(255,255,255,0.7)',
+    textAlign: 'center',
+    marginTop: 14,
+    lineHeight: 22,
+    fontSize: 15,
+    maxWidth: 320,
+  },
   actions: { padding: 20, paddingBottom: 28 },
-  link: { textAlign: 'center', color: colors.accent, marginTop: 16, fontWeight: '700' },
+  linkWrap: { marginTop: 16, alignItems: 'center' },
+  link: { color: '#06C167', fontSize: 15 },
 });

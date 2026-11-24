@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import * as Location from 'expo-location';
-import { mapConfig } from '../lib/config';
+import { mapConfig, SENAI_LUIZ_VARGA } from '../lib/config';
 
 export type DeviceLocation = {
   latitude: number;
@@ -12,9 +12,10 @@ export type DeviceLocation = {
   timestamp: number;
 };
 
-/** Centro de mapa só enquanto não há GPS — NUNCA tratar como posição do usuário. */
-const MAP_PARK: DeviceLocation = {
-  ...mapConfig.defaultCenter,
+/** Campus SENAI Luiz Varga (Limeira) — fallback quando GPS está bloqueado (ex.: PCs do SENAI). */
+const CAMPUS_FALLBACK: DeviceLocation = {
+  latitude: SENAI_LUIZ_VARGA.latitude,
+  longitude: SENAI_LUIZ_VARGA.longitude,
   heading: null,
   speedMps: null,
   accuracy: null,
@@ -47,16 +48,21 @@ function toDeviceLocation(coords: {
 }
 
 /** Geolocation nativa do browser — mais confiável que expo-location no web. */
-function webGetCurrentPosition(): Promise<GeolocationPosition> {
+function webGetCurrentPosition(opts?: {
+  enableHighAccuracy?: boolean;
+  timeout?: number;
+  maximumAge?: number;
+}): Promise<GeolocationPosition> {
   return new Promise((resolve, reject) => {
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
       reject(new Error('Geolocalização indisponível neste navegador'));
       return;
     }
     navigator.geolocation.getCurrentPosition(resolve, reject, {
-      enableHighAccuracy: true,
-      timeout: 20000,
-      maximumAge: 0,
+      // Fix rápido primeiro (cached/rede); precisão alta fica no watch
+      enableHighAccuracy: opts?.enableHighAccuracy ?? false,
+      timeout: opts?.timeout ?? 4000,
+      maximumAge: opts?.maximumAge ?? 60_000,
     });
   });
 }
@@ -65,20 +71,21 @@ function webWatchPosition(onOk: (p: GeolocationPosition) => void, onErr: (e: Geo
   if (typeof navigator === 'undefined' || !navigator.geolocation) return -1;
   return navigator.geolocation.watchPosition(onOk, onErr, {
     enableHighAccuracy: true,
-    timeout: 20000,
-    maximumAge: 2000,
+    timeout: 10_000,
+    maximumAge: 5000,
   });
 }
 
 function geoErrorMessage(code?: number, message?: string) {
+  const campus = `Usando localização padrão: ${SENAI_LUIZ_VARGA.label}`;
   if (code === 1) {
     return Platform.OS === 'web'
-      ? 'Permissão de localização bloqueada — clique no cadeado da barra de endereço e permita localização'
-      : 'Permissão de localização negada';
+      ? `Localização bloqueada no navegador/PC. ${campus}`
+      : `Permissão de localização negada. ${campus}`;
   }
-  if (code === 2) return 'GPS indisponível — verifique se a localização do dispositivo está ligada';
-  if (code === 3) return 'Tempo esgotado ao obter GPS — tente de novo';
-  return message ?? 'Falha ao obter GPS do dispositivo';
+  if (code === 2) return `GPS indisponível. ${campus}`;
+  if (code === 3) return `Tempo esgotado ao obter GPS. ${campus}`;
+  return message ? `${message}. ${campus}` : `GPS indisponível. ${campus}`;
 }
 
 function readCachedFix(): DeviceLocation | null {
@@ -91,17 +98,34 @@ export function useDeviceLocation(options?: { watch?: boolean; distanceInterval?
   const watch = options?.watch ?? true;
   const cached = readCachedFix();
   const [permission, setPermission] = useState<Location.PermissionStatus | null>(null);
-  const [location, setLocation] = useState<DeviceLocation>(cached ?? MAP_PARK);
+  const [location, setLocation] = useState<DeviceLocation>(cached ?? CAMPUS_FALLBACK);
   const [ready, setReady] = useState(!!cached);
   const [error, setError] = useState<string | null>(null);
-  /** true somente com coordenada real do dispositivo/navegador */
+  /** true com GPS real OU fallback de campus (permite mapa/rota no PC do SENAI) */
   const [hasFix, setHasFix] = useState(!!cached);
+  /** true quando a posição é o campus SENAI (GPS bloqueado/indisponível) */
+  const [isFallback, setIsFallback] = useState(false);
   const subRef = useRef<Location.LocationSubscription | null>(null);
   const webWatchId = useRef<number>(-1);
   const locationRef = useRef(location);
   const hasFixRef = useRef(hasFix);
+  const isFallbackRef = useRef(isFallback);
   locationRef.current = location;
   hasFixRef.current = hasFix;
+  isFallbackRef.current = isFallback;
+
+  const applyCampusFallback = useCallback((reason?: string) => {
+    const next: DeviceLocation = {
+      ...CAMPUS_FALLBACK,
+      timestamp: Date.now(),
+    };
+    setLocation(next);
+    setHasFix(true);
+    setIsFallback(true);
+    setError(reason ?? `Usando localização padrão: ${SENAI_LUIZ_VARGA.label}`);
+    setReady(true);
+    return next;
+  }, []);
 
   const apply = useCallback((coords: {
     latitude: number;
@@ -117,6 +141,7 @@ export function useDeviceLocation(options?: { watch?: boolean; distanceInterval?
     lastKnownFix = next;
     setLocation(next);
     setHasFix(true);
+    setIsFallback(false);
     setError(null);
   }, []);
 
@@ -138,56 +163,78 @@ export function useDeviceLocation(options?: { watch?: boolean; distanceInterval?
           lastKnownFix = next;
           setLocation(next);
           setHasFix(true);
+          setIsFallback(false);
           setError(null);
           setPermission(Location.PermissionStatus.GRANTED);
           setReady(true);
           return next;
         } catch (e: any) {
-          const msg = geoErrorMessage(e?.code, e?.message);
-          setError(msg);
-          setReady(true);
-          return hasFixRef.current ? locationRef.current : readCachedFix() ?? MAP_PARK;
+          if (hasFixRef.current && !isFallbackRef.current) return locationRef.current;
+          const cachedFix = readCachedFix();
+          if (cachedFix) {
+            setLocation(cachedFix);
+            setHasFix(true);
+            setIsFallback(false);
+            setReady(true);
+            return cachedFix;
+          }
+          return applyCampusFallback(geoErrorMessage(e?.code, e?.message));
         }
       }
 
       const services = await Location.hasServicesEnabledAsync();
       if (!services) {
-        setError('Serviços de localização desativados no dispositivo');
-        setReady(true);
-        return hasFixRef.current ? locationRef.current : MAP_PARK;
+        if (hasFixRef.current && !isFallbackRef.current) {
+          setReady(true);
+          return locationRef.current;
+        }
+        return applyCampusFallback('Serviços de localização desativados no dispositivo');
       }
 
       const { status } = await Location.requestForegroundPermissionsAsync();
       setPermission(status);
       if (status !== 'granted') {
-        setError('Permissão de localização negada');
-        setReady(true);
-        return hasFixRef.current ? locationRef.current : MAP_PARK;
+        if (hasFixRef.current && !isFallbackRef.current) {
+          setReady(true);
+          return locationRef.current;
+        }
+        return applyCampusFallback('Permissão de localização negada');
       }
 
       // Última conhecida rápido, depois precisão alta
       const last = await Location.getLastKnownPositionAsync();
-      if (last && !hasFixRef.current) {
+      if (last && (!hasFixRef.current || isFallbackRef.current)) {
         apply(last.coords, last.timestamp);
       }
 
       const pos = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.BestForNavigation,
+        accuracy: Location.Accuracy.Balanced,
         mayShowUserSettingsDialog: true,
       });
       const next = toDeviceLocation(pos.coords, pos.timestamp);
       lastKnownFix = next;
       setLocation(next);
       setHasFix(true);
+      setIsFallback(false);
       setError(null);
       setReady(true);
       return next;
     } catch (e: any) {
-      setError(e?.message ?? 'Falha ao obter GPS do dispositivo');
-      setReady(true);
-      return hasFixRef.current ? locationRef.current : readCachedFix() ?? MAP_PARK;
+      if (hasFixRef.current && !isFallbackRef.current) {
+        setReady(true);
+        return locationRef.current;
+      }
+      const cachedFix = readCachedFix();
+      if (cachedFix) {
+        setLocation(cachedFix);
+        setHasFix(true);
+        setIsFallback(false);
+        setReady(true);
+        return cachedFix;
+      }
+      return applyCampusFallback(e?.message ?? 'Falha ao obter GPS do dispositivo');
     }
-  }, [apply]);
+  }, [apply, applyCampusFallback]);
 
   useEffect(() => {
     let mounted = true;
@@ -213,8 +260,11 @@ export function useDeviceLocation(options?: { watch?: boolean; distanceInterval?
             setReady(true);
           } catch (e: any) {
             if (!mounted) return;
-            setError(geoErrorMessage(e?.code, e?.message));
-            setReady(true);
+            if (!hasFixRef.current || isFallbackRef.current) {
+              applyCampusFallback(geoErrorMessage(e?.code, e?.message));
+            } else {
+              setReady(true);
+            }
           }
 
           if (watch && mounted) {
@@ -233,8 +283,9 @@ export function useDeviceLocation(options?: { watch?: boolean; distanceInterval?
                 );
               },
               (err) => {
-                if (!mounted || hasFixRef.current) return;
-                setError(geoErrorMessage(err.code, err.message));
+                if (!mounted) return;
+                if (hasFixRef.current && !isFallbackRef.current) return;
+                applyCampusFallback(geoErrorMessage(err.code, err.message));
               },
             );
           }
@@ -244,8 +295,7 @@ export function useDeviceLocation(options?: { watch?: boolean; distanceInterval?
         const services = await Location.hasServicesEnabledAsync();
         if (!mounted) return;
         if (!services) {
-          setError('Ative a localização do dispositivo');
-          setReady(true);
+          applyCampusFallback('Serviços de localização desativados no dispositivo');
           return;
         }
 
@@ -253,16 +303,19 @@ export function useDeviceLocation(options?: { watch?: boolean; distanceInterval?
         if (!mounted) return;
         setPermission(status);
         if (status !== 'granted') {
-          setError('Ative a localização do dispositivo para navegar');
-          setReady(true);
+          applyCampusFallback('Permissão de localização negada');
           return;
         }
 
         const last = await Location.getLastKnownPositionAsync();
-        if (mounted && last) apply(last.coords, last.timestamp);
+        if (mounted && last) {
+          apply(last.coords, last.timestamp);
+          setReady(true);
+        }
 
+        // Fix balanceado rápido; watch sobe a precisão depois
         const pos = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.BestForNavigation,
+          accuracy: Location.Accuracy.Balanced,
         });
         if (!mounted) return;
         apply(pos.coords, pos.timestamp);
@@ -272,8 +325,8 @@ export function useDeviceLocation(options?: { watch?: boolean; distanceInterval?
 
         subRef.current = await Location.watchPositionAsync(
           {
-            accuracy: Location.Accuracy.BestForNavigation,
-            timeInterval: 1000,
+            accuracy: Location.Accuracy.High,
+            timeInterval: 1500,
             distanceInterval: options?.distanceInterval ?? 5,
             mayShowUserSettingsDialog: true,
           },
@@ -284,8 +337,11 @@ export function useDeviceLocation(options?: { watch?: boolean; distanceInterval?
         );
       } catch (e: any) {
         if (!mounted) return;
-        setError(e?.message ?? 'GPS indisponível neste dispositivo');
-        setReady(true);
+        if (!hasFixRef.current || isFallbackRef.current) {
+          applyCampusFallback(e?.message ?? 'GPS indisponível neste dispositivo');
+        } else {
+          setReady(true);
+        }
       }
     })();
 
@@ -298,7 +354,7 @@ export function useDeviceLocation(options?: { watch?: boolean; distanceInterval?
         webWatchId.current = -1;
       }
     };
-  }, [watch, options?.distanceInterval, apply]);
+  }, [watch, options?.distanceInterval, apply, applyCampusFallback]);
 
   return {
     location,
@@ -306,8 +362,9 @@ export function useDeviceLocation(options?: { watch?: boolean; distanceInterval?
     ready,
     error,
     hasFix,
+    isFallback,
     refresh,
-    /** Só use como “você está aqui” quando hasFix === true */
+    /** Use com hasFix — GPS real ou campus SENAI (fallback) */
     coord: { latitude: location.latitude, longitude: location.longitude },
     heading: location.heading,
     speedKmh: location.speedMps != null ? Math.round(location.speedMps * 3.6) : 0,

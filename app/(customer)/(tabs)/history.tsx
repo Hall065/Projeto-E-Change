@@ -35,8 +35,8 @@ export default function HistoryScreen() {
           contentContainerStyle={styles.pad}
           refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={colors.primary} />}
         >
-          <Title>Charging history</Title>
-          <Subtitle>Past sessions and receipts.</Subtitle>
+          <Title>Histórico</Title>
+          <Subtitle>Sessões e comprovantes recentes.</Subtitle>
           {!user && <EmptyState title="Faça login" subtitle="Seu histórico aparece aqui após as recargas." />}
           {user && !rows.length && <EmptyState title="Sem sessões ainda" subtitle="Complete uma jornada de recarga para ver o histórico." />}
           {rows.map((row) => (

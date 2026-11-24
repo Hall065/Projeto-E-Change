@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BatteryBadge } from '../../../src/components/BatteryBadge';
 import { useAuth } from '../../../src/context/AuthContext';
 import { useVehicle } from '../../../src/context/VehicleContext';
+import { ROLE_LABELS } from '../../../src/lib/demoAccounts';
 import { maskSensitive } from '../../../src/lib/format';
 import { useTheme } from '../../../src/theme/ThemeContext';
 import { elevation, radius } from '../../../src/theme/tokens';
@@ -14,9 +15,19 @@ const CONNECTORS: ConnectorType[] = ['CCS', 'CHAdeMO', 'Type2'];
 
 export default function ProfileScreen() {
   const { colors, mode, setMode, isDark } = useTheme();
-  const { profile, user, signOut } = useAuth();
+  const { profile, user, signOut, updateProfile, isDemoSession } = useAuth();
   const { vehicle, battery, setBatteryPercent, updateVehicle } = useVehicle();
   const [batteryInput, setBatteryInput] = useState(String(battery.percent));
+  const [fullName, setFullName] = useState(profile?.full_name ?? '');
+  const [cpfCnpj, setCpfCnpj] = useState(profile?.cpf_cnpj ?? '');
+  const [phone, setPhone] = useState(profile?.phone ?? '');
+  const [savingProfile, setSavingProfile] = useState(false);
+
+  useEffect(() => {
+    setFullName(profile?.full_name ?? '');
+    setCpfCnpj(profile?.cpf_cnpj ?? '');
+    setPhone(profile?.phone ?? '');
+  }, [profile?.id, profile?.full_name, profile?.cpf_cnpj, profile?.phone]);
 
   const applyBattery = () => {
     const n = Number(batteryInput.replace(',', '.'));
@@ -27,6 +38,28 @@ export default function ProfileScreen() {
     setBatteryPercent(n);
   };
 
+  const saveAccount = async () => {
+    if (!profile) {
+      Alert.alert('Perfil', 'Entre na conta para editar seus dados.');
+      return;
+    }
+    try {
+      setSavingProfile(true);
+      await updateProfile({
+        fullName: fullName.trim() || profile.full_name,
+        cpfCnpj: cpfCnpj.trim() || null,
+        phone: phone.trim() || null,
+      });
+      Alert.alert('Perfil', 'Dados da conta atualizados.');
+    } catch (e: any) {
+      Alert.alert('Perfil', e?.message ?? 'Falha ao salvar');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const roleLabel = profile?.role ? ROLE_LABELS[profile.role] : 'Visitante';
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <SafeAreaView style={{ flex: 1 }}>
@@ -36,7 +69,7 @@ export default function ProfileScreen() {
           <View style={[styles.card, elevation.soft, { backgroundColor: colors.surface, borderColor: colors.line }]}>
             <View style={styles.row}>
               <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
-                <Text style={{ color: '#fff', fontWeight: '800' }}>
+                <Text style={{ color: colors.onPrimary, fontWeight: '800' }}>
                   {(profile?.full_name ?? 'U').slice(0, 1).toUpperCase()}
                 </Text>
               </View>
@@ -46,11 +79,37 @@ export default function ProfileScreen() {
                   {profile?.email ?? user?.email ?? 'Não autenticado'}
                 </Text>
                 <Text style={{ color: colors.muted, marginTop: 3, fontSize: 12 }}>
-                  {profile?.role ?? 'customer'} · CPF {maskSensitive(profile?.cpf_cnpj)}
+                  {roleLabel}
+                  {isDemoSession ? ' · sessão local' : ''}
+                  {' · '}
+                  CPF {maskSensitive(profile?.cpf_cnpj)}
                 </Text>
               </View>
             </View>
           </View>
+
+          {profile ? (
+            <>
+              <Text style={[styles.section, { color: colors.ink }]}>Dados da conta</Text>
+              <View style={[styles.card, elevation.soft, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                <Field label="Nome" value={fullName} onChange={setFullName} colors={colors} />
+                <Field label="CPF / CNPJ" value={cpfCnpj} onChange={setCpfCnpj} colors={colors} />
+                <Field label="Telefone" value={phone} onChange={setPhone} colors={colors} keyboardType="default" />
+                <Text style={{ color: colors.muted, fontSize: 12, marginTop: 10 }}>
+                  Tipo: {roleLabel} · e-mail {profile.email}
+                </Text>
+                <Pressable
+                  onPress={() => void saveAccount()}
+                  disabled={savingProfile}
+                  style={[styles.saveBtn, { backgroundColor: colors.primary, marginTop: 12, alignItems: 'center' }]}
+                >
+                  <Text style={{ color: colors.onPrimary, fontWeight: '800' }}>
+                    {savingProfile ? 'Salvando…' : 'Salvar dados da conta'}
+                  </Text>
+                </Pressable>
+              </View>
+            </>
+          ) : null}
 
           <Text style={[styles.section, { color: colors.ink }]}>Aparência</Text>
           <View style={styles.themeRow}>
@@ -68,7 +127,13 @@ export default function ProfileScreen() {
                     },
                   ]}
                 >
-                  <Text style={{ color: active ? '#fff' : colors.ink, fontWeight: '800', fontSize: 12 }}>
+                  <Text
+                    style={{
+                      color: active ? colors.onPrimary : colors.ink,
+                      fontWeight: '800',
+                      fontSize: 12,
+                    }}
+                  >
                     {m === 'system' ? 'Sistema' : m === 'light' ? 'Claro' : 'Escuro'}
                   </Text>
                 </Pressable>
@@ -171,7 +236,7 @@ export default function ProfileScreen() {
                 style={[styles.input, { color: colors.ink, borderColor: colors.line, backgroundColor: colors.bg, flex: 1 }]}
               />
               <Pressable onPress={applyBattery} style={[styles.saveBtn, { backgroundColor: colors.primary }]}>
-                <Text style={{ color: '#fff', fontWeight: '800' }}>Salvar</Text>
+                <Text style={{ color: colors.onPrimary, fontWeight: '800' }}>Salvar</Text>
               </Pressable>
             </View>
           </View>
@@ -191,18 +256,18 @@ export default function ProfileScreen() {
               style={[styles.dangerBtn, { backgroundColor: colors.primary }]}
               onPress={() => router.push('/(auth)/login')}
             >
-              <Text style={{ color: '#fff', fontWeight: '800' }}>Entrar</Text>
+              <Text style={{ color: colors.onPrimary, fontWeight: '800' }}>Entrar</Text>
             </Pressable>
           )}
 
           {profile?.role === 'admin' ? (
             <Pressable onPress={() => router.push('/(admin)')} style={{ marginTop: 12, alignItems: 'center' }}>
-              <Text style={{ color: colors.primary, fontWeight: '800' }}>Abrir painel Admin</Text>
+              <Text style={{ color: colors.accent, fontWeight: '800' }}>Abrir painel Admin</Text>
             </Pressable>
           ) : null}
           {profile?.role === 'owner' ? (
             <Pressable onPress={() => router.push('/(owner)')} style={{ marginTop: 12, alignItems: 'center' }}>
-              <Text style={{ color: colors.primary, fontWeight: '800' }}>Abrir portal Owner</Text>
+              <Text style={{ color: colors.accent, fontWeight: '800' }}>Abrir portal Owner</Text>
             </Pressable>
           ) : null}
         </ScrollView>

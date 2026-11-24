@@ -15,15 +15,24 @@ const STROKE = 14;
 const R = (SIZE - STROKE) / 2;
 const C = 2 * Math.PI * R;
 
-export function ChargingRing({ percent, dark }: { percent: number; dark?: boolean }) {
+export function ChargingRing({
+  percent,
+  dark,
+  animMs = 700,
+}: {
+  percent: number;
+  dark?: boolean;
+  /** Duração da animação do anel — menor = acompanha carga rápida */
+  animMs?: number;
+}) {
   const progress = useSharedValue(0);
 
   useEffect(() => {
     progress.value = withTiming(Math.min(100, Math.max(0, percent)) / 100, {
-      duration: 700,
+      duration: Math.max(80, animMs),
       easing: Easing.out(Easing.cubic),
     });
-  }, [percent]);
+  }, [percent, animMs]);
 
   const animatedProps = useAnimatedProps(() => ({
     strokeDashoffset: C * (1 - progress.value),
@@ -50,8 +59,8 @@ export function ChargingRing({ percent, dark }: { percent: number; dark?: boolea
           strokeLinecap="round"
           strokeDasharray={`${C} ${C}`}
           animatedProps={animatedProps}
-          rotation="-90"
-          origin={`${SIZE / 2}, ${SIZE / 2}`}
+          // SVG transform (evita transform-origin inválido no DOM/web)
+          transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`}
         />
       </Svg>
       <View style={styles.center}>

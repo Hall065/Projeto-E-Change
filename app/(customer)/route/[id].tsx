@@ -10,7 +10,12 @@ import { useDeviceLocation } from '../../../src/hooks/useDeviceLocation';
 import { formatPriceKwh } from '../../../src/lib/format';
 import { resolveOpsOrigin } from '../../../src/lib/opsOrigin';
 import { planChargeStops } from '../../../src/services/energy';
-import { describeStep, fetchDrivingAlternatives, type NavRoute } from '../../../src/services/routing';
+import {
+  describeStep,
+  fetchDrivingAlternatives,
+  liveManeuverGuide,
+  type NavRoute,
+} from '../../../src/services/routing';
 import { isCustomDestinationId } from '../../../src/services/customDestination';
 import { fetchStationById, fetchStations } from '../../../src/services/stations';
 import type { StationWithMetrics } from '../../../src/types/database';
@@ -26,8 +31,8 @@ export default function RoutePreviewScreen() {
   const { colors, isDark } = useTheme();
   const { station, setStation, reservation, setNavRoute } = useJourney();
   const { vehicle, battery } = useVehicle();
-  const { coord: rawCoord, location, ready, hasFix, refresh } = useDeviceLocation({ watch: true });
-  // Origem da rota = GPS real apenas (nunca hub Sé / fallback de mapa)
+  const { coord: rawCoord, location, ready, hasFix, isFallback, refresh } = useDeviceLocation({ watch: true });
+  // Origem da rota = GPS real ou campus SENAI (fallback quando GPS bloqueado)
   const userOrigin = useMemo(
     () =>
       hasFix
@@ -36,8 +41,8 @@ export default function RoutePreviewScreen() {
     [hasFix, rawCoord.latitude, rawCoord.longitude],
   );
   const ops = useMemo(
-    () => resolveOpsOrigin(rawCoord, { hasFix }),
-    [rawCoord.latitude, rawCoord.longitude, hasFix],
+    () => resolveOpsOrigin(rawCoord, { hasFix, isFallback }),
+    [rawCoord.latitude, rawCoord.longitude, hasFix, isFallback],
   );
   const coord = userOrigin ?? ops.coord;
   const [localStation, setLocalStation] = useState<StationWithMetrics | null>(
@@ -153,8 +158,20 @@ export default function RoutePreviewScreen() {
     setNavRoute(route);
   }, [route?.id]);
 
-  const first = route?.steps?.[0];
-  const preview = first ? describeStep(first) : null;
+  const preview = useMemo(() => {
+    if (!route?.coordinates?.length || !userOrigin) {
+      const first = route?.steps?.[0];
+      return first ? describeStep(first) : null;
+    }
+    const guide = liveManeuverGuide(route.coordinates, userOrigin, {
+      osrmSteps: route.steps,
+      minTurnDeg: 38,
+      max: 4,
+    });
+    if (guide.current) return describeStep(guide.current.step);
+    const first = route.steps?.[0];
+    return first ? describeStep(first) : null;
+  }, [route?.coordinates, route?.steps, userOrigin?.latitude, userOrigin?.longitude]);
   const mapStations = useMemo(() => {
     const stops = plan?.stops.map((s) => s.station) ?? [];
     return localStation ? [localStation, ...stops] : stops;
@@ -293,7 +310,11 @@ export default function RoutePreviewScreen() {
               ) : null}
 
               <Text style={{ color: colors.muted, marginTop: 8, marginBottom: 8 }}>
-                {reservation ? 'Reserva solicitada' : 'Sem reserva'} · provedor {route?.provider}
+                {reservation
+                  ? `Reserva confirmada · chega ${new Date(reservation.arrives_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} · tolerância até ${new Date(reservation.grace_until).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`
+                  : 'Sem reserva'}
+                {' · '}
+                {route?.provider}
               </Text>
             </ScrollView>
           )}
@@ -309,7 +330,7 @@ export default function RoutePreviewScreen() {
               { backgroundColor: colors.primary, opacity: loading || !route || !hasFix ? 0.5 : 1 },
             ]}
           >
-            <Text style={styles.ctaText}>Iniciar navegação</Text>
+            <Text style={[styles.ctaText, { color: colors.onPrimary }]}>Iniciar navegação</Text>
           </Pressable>
           <Pressable onPress={() => router.back()} style={{ paddingVertical: 12, alignItems: 'center' }}>
             <Text style={{ color: colors.muted, fontWeight: '700' }}>Voltar</Text>
@@ -385,5 +406,5 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 4,
   },
-  ctaText: { color: '#fff', fontWeight: '900', fontSize: 15 },
+  ctaText: { fontWeight: '900', fontSize: 15 },
 });

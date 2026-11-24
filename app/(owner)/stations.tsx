@@ -1,68 +1,82 @@
-import React, { useEffect, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text } from 'react-native';
-import { Stack } from 'expo-router';
+import React, { useCallback, useState } from 'react';
+import { Alert, RefreshControl, ScrollView, StyleSheet, Text } from 'react-native';
+import { Stack, useFocusEffect } from 'expo-router';
 import { Button, Card, Input, Screen } from '../../src/components/ui';
 import { useAuth } from '../../src/context/AuthContext';
-import { supabase } from '../../src/lib/supabase';
+import { createOwnerStation, getStationsForOwner } from '../../src/lib/localCatalog';
+import type { Station } from '../../src/types/database';
 import { colors } from '../../src/theme/colors';
 
 export default function OwnerStations() {
   const { user } = useAuth();
-  const [stations, setStations] = useState<any[]>([]);
+  const [stations, setStations] = useState<Station[]>([]);
   const [name, setName] = useState('');
   const [address, setAddress] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     if (!user) return;
-    const { data } = await supabase.from('stations').select('*').eq('owner_id', user.id).order('created_at', { ascending: false });
-    setStations(data ?? []);
-  };
+    setLoading(true);
+    try {
+      setStations(await getStationsForOwner(user.id));
+    } finally {
+      setLoading(false);
+    }
+  }, [user]);
 
-  useEffect(() => { load(); }, [user]);
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load]),
+  );
 
   const create = async () => {
-    if (!user || !name.trim() || !address.trim()) return;
-    const { error } = await supabase.from('stations').insert({
-      owner_id: user.id,
+    if (!user || !name.trim() || !address.trim()) {
+      Alert.alert('Preencha nome e endereço');
+      return;
+    }
+    await createOwnerStation({
+      ownerId: user.id,
       name: name.trim(),
       address: address.trim(),
-      city: 'São Paulo',
-      state: 'SP',
-      latitude: -23.55 + Math.random() * 0.05,
-      longitude: -46.63 - Math.random() * 0.05,
-      status: 'pending',
     });
-    if (error) Alert.alert('Erro', error.message);
-    else {
-      setName('');
-      setAddress('');
-      Alert.alert('Enviado', 'Posto criado e aguardando aprovação do admin.');
-      load();
-    }
+    setName('');
+    setAddress('');
+    Alert.alert('Enviado', 'Posto criado e aguardando aprovação do admin.');
+    load();
   };
 
   return (
     <Screen>
       <Stack.Screen options={{ title: 'Minhas estações' }} />
-      <ScrollView contentContainerStyle={styles.pad}>
+      <ScrollView
+        contentContainerStyle={styles.pad}
+        refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={colors.primary} />}
+      >
         <Text style={styles.h}>Cadastrar posto</Text>
         <Input placeholder="Nome do posto" value={name} onChangeText={setName} />
         <Input placeholder="Endereço" value={address} onChangeText={setAddress} />
         <Button title="Enviar para aprovação" onPress={create} />
+        <Text style={[styles.h, { marginTop: 18 }]}>Seus postos ({stations.length})</Text>
         {stations.map((s) => (
           <Card key={s.id}>
             <Text style={styles.title}>{s.name}</Text>
             <Text style={styles.meta}>{s.address}</Text>
-            <Text style={styles.meta}>Status: {s.status}</Text>
+            <Text style={styles.meta}>
+              {s.city}/{s.state} · Status: {s.status}
+            </Text>
           </Card>
         ))}
+        {!stations.length && (
+          <Text style={styles.meta}>Nenhum posto ainda. Cadastre o primeiro acima.</Text>
+        )}
       </ScrollView>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  pad: { padding: 20 },
+  pad: { padding: 20, paddingBottom: 40 },
   h: { fontWeight: '800', color: colors.ink, marginBottom: 4 },
   title: { fontWeight: '800', color: colors.ink },
   meta: { color: colors.muted, marginTop: 4 },

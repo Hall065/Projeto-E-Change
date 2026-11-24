@@ -1,47 +1,30 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Link, Stack } from 'expo-router';
+import { Link, Stack, useFocusEffect } from 'expo-router';
 import { Card, Screen, Stat } from '../../src/components/ui';
 import { useAuth } from '../../src/context/AuthContext';
-import { supabase } from '../../src/lib/supabase';
+import { getOwnerStats } from '../../src/lib/localCatalog';
 import { colors } from '../../src/theme/colors';
 
 export default function OwnerHome() {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
   const [stats, setStats] = useState({ stations: 0, free: 0, occupied: 0, revenue: 0 });
 
-  useEffect(() => {
-    if (!user) return;
-    (async () => {
-      const { data: stations } = await supabase.from('stations').select('id').eq('owner_id', user.id);
-      const ids = (stations ?? []).map((s) => s.id);
-      if (!ids.length) {
-        // demo: show global active metrics for owners without owned stations yet
-        const { data: connectors } = await supabase.from('connectors').select('status');
-        setStats({
-          stations: 0,
-          free: (connectors ?? []).filter((c) => c.status === 'free').length,
-          occupied: (connectors ?? []).filter((c) => c.status === 'occupied').length,
-          revenue: 0,
-        });
-        return;
-      }
-      const { data: connectors } = await supabase.from('connectors').select('status').in('station_id', ids);
-      setStats({
-        stations: ids.length,
-        free: (connectors ?? []).filter((c) => c.status === 'free').length,
-        occupied: (connectors ?? []).filter((c) => c.status === 'occupied').length,
-        revenue: 0,
-      });
-    })();
-  }, [user]);
+  useFocusEffect(
+    useCallback(() => {
+      if (!user) return;
+      getOwnerStats(user.id).then(setStats).catch(console.error);
+    }, [user]),
+  );
 
   return (
     <Screen>
-      <Stack.Screen options={{ title: 'Owner Portal' }} />
+      <Stack.Screen options={{ title: 'Portal do Dono' }} />
       <ScrollView contentContainerStyle={styles.pad}>
-        <Text style={styles.h1}>Meus postos</Text>
-        <Text style={styles.sub}>Cadastre tarifas, status de conectores e acompanhe faturamento.</Text>
+        <Text style={styles.h1}>Olá, {profile?.full_name ?? 'Dono'}</Text>
+        <Text style={styles.sub}>
+          {profile?.email ?? user?.email ?? ''} · Cadastre tarifas, status de conectores e acompanhe faturamento.
+        </Text>
         <View style={styles.stats}>
           <Stat label="Postos" value={String(stats.stations)} />
           <Stat label="Livres" value={String(stats.free)} />
@@ -49,11 +32,21 @@ export default function OwnerHome() {
         </View>
         <Card>
           <Text style={styles.cardTitle}>Ações rápidas</Text>
-          <Link href="/(owner)/stations" style={styles.link}>Gerenciar estações</Link>
-          <Link href="/(owner)/connectors" style={styles.link}>Status dos conectores</Link>
-          <Link href="/(owner)/pricing" style={styles.link}>Tarifas por kWh</Link>
-          <Link href="/(owner)/revenue" style={styles.link}>Relatório de faturamento</Link>
-          <Link href="/(customer)/map" style={styles.link}>← Voltar ao app</Link>
+          <Link href="/(owner)/stations" style={styles.link}>
+            Gerenciar estações
+          </Link>
+          <Link href="/(owner)/connectors" style={styles.link}>
+            Status dos conectores
+          </Link>
+          <Link href="/(owner)/pricing" style={styles.link}>
+            Tarifas por kWh
+          </Link>
+          <Link href="/(owner)/revenue" style={styles.link}>
+            Relatório de faturamento
+          </Link>
+          <Link href="/(customer)/(tabs)/map" style={styles.link}>
+            ← Voltar ao app
+          </Link>
         </Card>
       </ScrollView>
     </Screen>

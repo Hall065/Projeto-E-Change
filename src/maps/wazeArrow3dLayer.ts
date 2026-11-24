@@ -158,8 +158,11 @@ export async function createWazeArrow3dLayer(maplibregl: any) {
 
     render(_gl: WebGLRenderingContext, args: any) {
       if (!this._ready || !this._pose?.visible) return;
+      if (!this.renderer || !this.camera || !this.scene) return;
 
       const { longitude, latitude, headingDeg } = this._pose;
+      if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return;
+
       const merc = maplibregl.MercatorCoordinate.fromLngLat(
         { lng: longitude, lat: latitude },
         ARROW_ALTITUDE_M,
@@ -171,7 +174,11 @@ export async function createWazeArrow3dLayer(maplibregl: any) {
       const rotX = new THREE.Matrix4().makeRotationAxis(new THREE.Vector3(1, 0, 0), Math.PI / 2);
       const rotY = new THREE.Matrix4().makeRotationAxis(new THREE.Vector3(0, 1, 0), headingRad);
 
-      const main = args?.defaultProjectionData?.mainMatrix;
+      // MapLibre 5.x: defaultProjectionData.mainMatrix (ou modelViewProjectionMatrix legado)
+      const main =
+        args?.defaultProjectionData?.mainMatrix ??
+        args?.modelViewProjectionMatrix ??
+        args?.matrix;
       if (!main) return;
 
       const m = new THREE.Matrix4().fromArray(main);

@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -14,7 +13,9 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { BatteryBadge } from '../../../src/components/BatteryBadge';
 import { FloatingSearchBar } from '../../../src/components/FloatingSearchBar';
 import { Icon } from '../../../src/components/Icon';
+import { LoadingBlock } from '../../../src/components/LoadingScreen';
 import { MapCanvas, type MapCanvasHandle } from '../../../src/components/MapCanvas';
+import { FavoriteButton } from '../../../src/components/FavoriteButton';
 import { StationCard } from '../../../src/components/StationCard';
 import { useJourney } from '../../../src/context/JourneyContext';
 import { useVehicle } from '../../../src/context/VehicleContext';
@@ -31,19 +32,19 @@ type PowerFilter = 'all' | 'fast' | 'compat';
 
 export default function MapScreen() {
   const { colors, isDark, toggle } = useTheme();
-  const { setStation } = useJourney();
+  const { setStation, setConnectorId } = useJourney();
   const { vehicle, battery, setBatteryPercent } = useVehicle();
   const mapRef = useRef<MapCanvasHandle>(null);
   const { width } = useWindowDimensions();
   const desktop = width >= 900;
-  const { coord: rawCoord, ready, error, refresh, location, hasFix } = useDeviceLocation({
+  const { coord: rawCoord, ready, error, refresh, location, hasFix, isFallback } = useDeviceLocation({
     watch: true,
     distanceInterval: 12,
   });
 
   const ops = useMemo(
-    () => resolveOpsOrigin(rawCoord, { hasFix }),
-    [rawCoord.latitude, rawCoord.longitude, hasFix],
+    () => resolveOpsOrigin(rawCoord, { hasFix, isFallback }),
+    [rawCoord.latitude, rawCoord.longitude, hasFix, isFallback],
   );
   const coord = ops.coord;
 
@@ -52,22 +53,38 @@ export default function MapScreen() {
   const [loading, setLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<PowerFilter>('all');
+  const stationsBooted = useRef(false);
+  const coordRef = useRef(rawCoord);
+  coordRef.current = rawCoord;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { forceGps?: boolean }) => {
+    // Postos com coordenada atual (demo/SENAI = instantâneo) — não espera GPS
+    const originNow = {
+      latitude: coordRef.current.latitude,
+      longitude: coordRef.current.longitude,
+    };
     try {
-      setLoading(true);
+      if (!stationsBooted.current) setLoading(true);
+      setStations(await fetchStations(originNow));
+      stationsBooted.current = true;
+    } finally {
+      setLoading(false);
+    }
+
+    if (opts?.forceGps === false) return;
+    try {
       const origin = await refresh();
       setStations(
         await fetchStations({ latitude: origin.latitude, longitude: origin.longitude }),
       );
-    } finally {
-      setLoading(false);
+    } catch {
+      /* mantém lista já exibida */
     }
   }, [refresh]);
 
   useFocusEffect(
     useCallback(() => {
-      load();
+      void load({ forceGps: !stationsBooted.current });
     }, [load]),
   );
 
@@ -106,7 +123,9 @@ export default function MapScreen() {
   const startRoute = (s: StationWithMetrics) => {
     try {
       setStation(s);
-      router.push(`/(customer)/route/${encodeURIComponent(s.id)}`);
+      const free = (s.connectors ?? []).find((c) => c.status === 'free');
+      setConnectorId(free?.id ?? s.connectors?.[0]?.id ?? null);
+      router.push(`/(customer)/reserve/${encodeURIComponent(s.id)}`);
     } catch (e) {
       console.warn('[map] startRoute failed', e);
     }
@@ -173,115 +192,133 @@ export default function MapScreen() {
         </View>
       </SafeAreaView>
 
-      <Pressable
-        style={[styles.recenter, elevation.float, { backgroundColor: colors.surface }]}
-        onPress={onRecenter}
+      {/* Stack inferior: botão de recentrar fica ACIMA do sheet (sem sobrepor) */}
+      <View
+        style={[styles.bottomStack, desktop && styles.bottomStackDesktop]}
+        pointerEvents="box-none"
       >
-        <Icon name="locate" size={22} color={colors.blue} />
-      </Pressable>
+        <Pressable
+          style={[styles.recenter, elevation.float, { backgroundColor: colors.surface }]}
+          onPress={onRecenter}
+        >
+          <Icon name="locate" size={22} color={colors.blue} />
+        </Pressable>
 
-      <Animated.View
-        entering={FadeInDown.duration(280)}
-        style={[
-          styles.sheet,
-          elevation.sheet,
-          desktop && styles.sheetDesktop,
-          { backgroundColor: colors.surface, borderColor: colors.line },
-        ]}
-      >
-        <SafeAreaView edges={['bottom']}>
-          <View style={[styles.handle, { backgroundColor: colors.line }]} />
-          <Text style={[styles.greeting, { color: colors.ink, fontFamily: fontFamily.extrabold }]}>
-            Para onde?
-          </Text>
-          <Text style={[styles.sub, { color: colors.muted, fontFamily: fontFamily.medium }]}>
-            {!hasFix
-              ? error ?? 'Obtendo GPS do dispositivo…'
-              : ops.stationsFar
-                ? `GPS ativo · postos demo em SP podem ficar longe (${filtered.length})`
-                : ready
-                  ? `GPS ±${location.accuracy != null ? Math.round(location.accuracy) : '—'} m · ${filtered.length} carregadores`
-                  : 'Obtendo localização…'}
-          </Text>
+        <Animated.View
+          entering={FadeInDown.duration(280)}
+          style={[
+            styles.sheet,
+            elevation.sheet,
+            desktop && styles.sheetDesktop,
+            { backgroundColor: colors.surface, borderColor: colors.line },
+          ]}
+        >
+          <SafeAreaView edges={['bottom']}>
+            <View style={[styles.handle, { backgroundColor: colors.line }]} />
+            <Text style={[styles.greeting, { color: colors.ink, fontFamily: fontFamily.extrabold }]}>
+              Para onde?
+            </Text>
+            <Text style={[styles.sub, { color: colors.muted, fontFamily: fontFamily.medium }]}>
+              {!hasFix
+                ? error ?? 'Obtendo GPS do dispositivo…'
+                : isFallback
+                  ? `${ops.label} · GPS bloqueado neste PC · ${filtered.length} carregadores`
+                  : ops.stationsFar
+                    ? `GPS ativo · alguns postos da região podem ficar longe (${filtered.length})`
+                    : ready
+                      ? `GPS ±${location.accuracy != null ? Math.round(location.accuracy) : '—'} m · ${filtered.length} carregadores`
+                      : 'Obtendo localização…'}
+            </Text>
 
-          {!hasFix ? (
+            {!hasFix || isFallback ? (
+              <Pressable
+                onPress={() => void onRecenter()}
+                style={{
+                  marginTop: 10,
+                  backgroundColor: colors.primary,
+                  borderRadius: radius.md,
+                  paddingVertical: 12,
+                  alignItems: 'center',
+                }}
+              >
+                <Text style={{ color: colors.onPrimary, fontFamily: fontFamily.bold }}>
+                  {isFallback ? 'Tentar GPS de novo' : 'Permitir minha localização'}
+                </Text>
+              </Pressable>
+            ) : null}
+
             <Pressable
-              onPress={() => void onRecenter()}
-              style={{
-                marginTop: 10,
-                backgroundColor: '#000',
-                borderRadius: radius.md,
-                paddingVertical: 12,
-                alignItems: 'center',
-              }}
+              onPress={() =>
+                router.push({ pathname: '/(customer)/(tabs)/search', params: { q: query } })
+              }
+              style={{ marginTop: 12, marginBottom: 8 }}
             >
-              <Text style={{ color: '#fff', fontFamily: fontFamily.bold }}>Permitir minha localização</Text>
+              <FloatingSearchBar
+                value={query}
+                onChangeText={setQuery}
+                variant="whereTo"
+                placeholder="Buscar posto ou endereço"
+                onFocusPress={() =>
+                  router.push({ pathname: '/(customer)/(tabs)/search', params: { q: query } })
+                }
+              />
             </Pressable>
-          ) : null}
 
-          <Pressable
-            onPress={() => router.push({ pathname: '/(customer)/(tabs)/search', params: { q: query } })}
-            style={{ marginTop: 12, marginBottom: 8 }}
-          >
-            <FloatingSearchBar
-              value={query}
-              onChangeText={setQuery}
-              variant="whereTo"
-              placeholder="Buscar posto ou endereço"
-              onFocusPress={() => router.push({ pathname: '/(customer)/(tabs)/search', params: { q: query } })}
-            />
-          </Pressable>
-
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.filters}
-          >
-            {(
-              [
-                ['all', 'Todos'],
-                ['fast', 'Rápido'],
-                ['compat', 'Compatível'],
-              ] as const
-            ).map(([value, label]) => {
-              const active = filter === value;
-              return (
-                <Pressable
-                  key={value}
-                  onPress={() => setFilter(value)}
-                  style={[
-                    styles.chip,
-                    {
-                      backgroundColor: active ? colors.ink : colors.ghost,
-                    },
-                  ]}
-                >
-                  <Text
-                    style={{
-                      color: active ? (isDark ? '#000' : '#fff') : colors.ink,
-                      fontFamily: fontFamily.bold,
-                      fontSize: 13,
-                    }}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.filters}
+            >
+              {(
+                [
+                  ['all', 'Todos'],
+                  ['fast', 'Rápido'],
+                  ['compat', 'Compatível'],
+                ] as const
+              ).map(([value, label]) => {
+                const active = filter === value;
+                return (
+                  <Pressable
+                    key={value}
+                    onPress={() => setFilter(value)}
+                    style={[
+                      styles.chip,
+                      {
+                        backgroundColor: active ? colors.primary : colors.ghost,
+                      },
+                    ]}
                   >
-                    {label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
+                    <Text
+                      style={{
+                        color: active ? colors.onPrimary : colors.ink,
+                        fontFamily: fontFamily.bold,
+                        fontSize: 13,
+                      }}
+                    >
+                      {label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
 
-          {loading ? (
-            <ActivityIndicator color={colors.ink} style={{ marginVertical: 16 }} />
-          ) : (
+            {loading ? (
+              <LoadingBlock label="Buscando carregadores…" />
+            ) : (
             <ScrollView style={{ maxHeight: desktop ? 520 : 280 }} showsVerticalScrollIndicator={false}>
               {selected ? (
                 <View style={[styles.selected, { backgroundColor: colors.soft, borderColor: colors.line }]}>
-                  <Text style={{ color: colors.ink, fontFamily: fontFamily.bold, fontSize: 16 }}>
-                    {selected.name}
-                  </Text>
-                  <Text style={{ color: colors.muted, fontFamily: fontFamily.medium, marginTop: 4 }}>
-                    {selected.distance_km?.toFixed(1)} km · {selected.eta_min} min
-                  </Text>
+                  <View style={styles.selectedHead}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: colors.ink, fontFamily: fontFamily.bold, fontSize: 16 }}>
+                        {selected.name}
+                      </Text>
+                      <Text style={{ color: colors.muted, fontFamily: fontFamily.medium, marginTop: 4 }}>
+                        {selected.distance_km?.toFixed(1)} km · {selected.eta_min} min
+                      </Text>
+                    </View>
+                    <FavoriteButton stationId={selected.id} size={24} />
+                  </View>
                   {energyHint ? (
                     <Text
                       style={{
@@ -297,12 +334,12 @@ export default function MapScreen() {
                   ) : null}
                   <View style={styles.actions}>
                     <Pressable
-                      style={[styles.primaryBtn, { backgroundColor: colors.ink }]}
+                      style={[styles.primaryBtn, { backgroundColor: colors.primary }]}
                       onPress={() => startRoute(selected)}
                     >
                       <Text
                         style={{
-                          color: isDark ? '#000' : '#fff',
+                          color: colors.onPrimary,
                           fontFamily: fontFamily.bold,
                         }}
                       >
@@ -331,15 +368,16 @@ export default function MapScreen() {
               ))}
             </ScrollView>
           )}
-        </SafeAreaView>
-      </Animated.View>
+          </SafeAreaView>
+        </Animated.View>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  top: { position: 'absolute', left: 12, right: 12, top: 0 },
+  top: { position: 'absolute', left: 12, right: 12, top: 0, zIndex: 20 },
   topRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   roundBtn: {
     width: 44,
@@ -348,10 +386,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  recenter: {
+  bottomStack: {
     position: 'absolute',
-    right: 16,
-    bottom: 340,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 10,
+  },
+  bottomStackDesktop: {
+    left: undefined,
+    right: 20,
+    bottom: 20,
+    width: 400,
+  },
+  recenter: {
+    alignSelf: 'flex-end',
+    marginRight: 16,
+    marginBottom: 10,
     width: 48,
     height: 48,
     borderRadius: 24,
@@ -359,24 +410,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   sheet: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
     borderTopLeftRadius: radius.xxl,
     borderTopRightRadius: radius.xxl,
     borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: spacing.lg,
     paddingTop: 8,
-    maxHeight: '52%',
+    maxHeight: 420,
   },
   sheetDesktop: {
-    left: undefined,
-    right: 20,
-    bottom: 20,
-    width: 400,
     borderRadius: radius.xl,
-    maxHeight: '85%',
+    maxHeight: 640,
   },
   handle: {
     alignSelf: 'center',
@@ -399,6 +442,7 @@ const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 4,
   },
+  selectedHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
   actions: { flexDirection: 'row', gap: 8, marginTop: 12 },
   primaryBtn: {
     flex: 1.2,

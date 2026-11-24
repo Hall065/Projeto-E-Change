@@ -10,10 +10,11 @@ import { Icon } from '../../../src/components/Icon';
 import { useJourney } from '../../../src/context/JourneyContext';
 import { useVehicle } from '../../../src/context/VehicleContext';
 import { useDeviceLocation } from '../../../src/hooks/useDeviceLocation';
+import { SIM_SPEED_PRESETS, useRouteSimulation, type SimSpeed } from '../../../src/hooks/useRouteSimulation';
 import { haversineKm } from '../../../src/lib/format';
 import { estimateRouteEnergy } from '../../../src/services/energy';
 import { computeNavProgress } from '../../../src/services/navigationEngine';
-import { detectPathManeuvers, fetchDrivingRoute, type NavRoute } from '../../../src/services/routing';
+import { fetchDrivingRoute, liveManeuverGuide, type NavRoute } from '../../../src/services/routing';
 import { fetchStationById } from '../../../src/services/stations';
 import type { MapPerspective } from '../../../src/maps/types';
 import { useTheme } from '../../../src/theme/ThemeContext';
@@ -36,7 +37,10 @@ export default function NavigationScreen() {
   const [follow, setFollow] = useState(true);
   const [perspective, setPerspective] = useState<MapPerspective>('nav3d');
   const [recalcMsg, setRecalcMsg] = useState<string | null>(null);
+  const [simPanelOpen, setSimPanelOpen] = useState(false);
   const recalcLock = useRef(false);
+
+  const sim = useRouteSimulation(route?.coordinates);
 
   useEffect(() => {
     if (station?.id === id || !id) return;
@@ -75,36 +79,46 @@ export default function NavigationScreen() {
     };
   }, [station?.id, ready, hasFix]);
 
+  const navCoord = sim.active || sim.arrived ? (sim.position ?? coord) : coord;
+  const navHeading =
+    sim.active || sim.arrived ? sim.heading : location.heading ?? null;
+  const navSpeedKmh = sim.active ? sim.displayKmh : speedKmh;
+  const navHasFix = hasFix || sim.active || sim.arrived;
+
   const lookAheadM = useMemo(() => {
-    const speed = typeof speedKmh === 'number' ? speedKmh : 0;
+    const speed = typeof navSpeedKmh === 'number' ? navSpeedKmh : 0;
     if (speed > 80) return 140;
     if (speed > 50) return 110;
     if (speed > 25) return 85;
     return 65;
-  }, [speedKmh]);
+  }, [navSpeedKmh]);
 
   const progress = useMemo(
     () =>
       computeNavProgress({
         route,
-        user: coord,
-        deviceHeading: location.heading ?? null,
+        user: navCoord,
+        deviceHeading: navHeading,
         lookAheadM,
       }),
-    [route, coord.latitude, coord.longitude, location.heading, lookAheadM],
+    [route, navCoord.latitude, navCoord.longitude, navHeading, lookAheadM],
   );
 
-  /** Próximos passos = curvas detectadas na linha azul (não texto fixo do OSRM). */
+  // Chegada da simulação → mantém câmera no destino
+  useEffect(() => {
+    if (!sim.arrived) return;
+    setFollow(true);
+    setSimPanelOpen(false);
+  }, [sim.arrived]);
+
+  /**
+   * Próximos passos = ângulos reais da polyline azul à frente do usuário.
+   * Recalcula a cada update de GPS — setas esquerda/direita batem com o caminho.
+   */
   const bannerStep = useMemo(() => {
     type Upcoming = { step: NonNullable<typeof progress.step>; distanceM?: number };
-    const line =
-      progress.remainingLine.length > 2
-        ? progress.remainingLine
-        : route?.coordinates?.length
-          ? route.coordinates
-          : [];
-
-    if (line.length < 4) {
+    const coords = route?.coordinates ?? [];
+    if (coords.length < 3) {
       return {
         step: progress.step,
         index: progress.stepIndex,
@@ -113,49 +127,61 @@ export default function NavigationScreen() {
       };
     }
 
-    const maneuvers = detectPathManeuvers(line, 0, { minTurnDeg: 30, minGapM: 40, max: 5 });
-    const turns = maneuvers.filter((m) => m.turnSide !== 'straight' || m.step.instruction.includes('Chegue'));
-    const current = turns[0] ?? maneuvers[maneuvers.length - 1];
-    const upcoming: Upcoming[] = turns.slice(1, 4).map((m) => ({
+    const guide = liveManeuverGuide(coords, progress.snappedCoord ?? navCoord, {
+      osrmSteps: route?.steps,
+      minTurnDeg: 38,
+      max: 8,
+    });
+
+    const upcoming: Upcoming[] = guide.upcoming.map((m) => ({
       step: m.step,
-      distanceM: Math.max(30, m.distanceM),
+      distanceM: Math.max(15, m.distanceM),
     }));
 
-    // Nome da via: tenta casar com step OSRM mais próximo (só rótulo)
-    const osrm = route?.steps ?? [];
-    if (current && osrm.length) {
-      let best = osrm[0];
-      let bestD = Number.POSITIVE_INFINITY;
-      for (const s of osrm) {
-        const d =
-          Math.abs(s.location.latitude - current.location.latitude) +
-          Math.abs(s.location.longitude - current.location.longitude);
-        if (d < bestD) {
-          bestD = d;
-          best = s;
-        }
-      }
-      if (best?.name) current.step.name = best.name;
+    // Na chegada da simulação, força banner de destino
+    if (sim.arrived || progress.arrived) {
+      return {
+        step: {
+          instruction: 'Chegue ao destino',
+          distanceM: 0,
+          durationS: 0,
+          name: station?.name || 'Destino',
+          location: progress.snappedCoord,
+          turnSide: 'straight' as const,
+          turnDeg: 0,
+          modifier: 'arrive',
+        },
+        index: progress.stepIndex,
+        upcoming: [] as Upcoming[],
+        distanceM: 10,
+      };
     }
 
     return {
-      step: current?.step ?? progress.step,
+      step: guide.current?.step ?? progress.step,
       index: progress.stepIndex,
       upcoming,
-      distanceM: Math.max(10, current?.distanceM ?? progress.distanceToManeuverM),
+      distanceM: guide.distanceToCurrentM || progress.distanceToManeuverM,
     };
   }, [
-    progress.remainingLine,
+    route?.coordinates,
+    route?.steps,
+    progress.snappedCoord?.latitude,
+    progress.snappedCoord?.longitude,
     progress.step,
     progress.stepIndex,
     progress.distanceToManeuverM,
-    route?.coordinates,
-    route?.steps,
+    progress.arrived,
+    navCoord.latitude,
+    navCoord.longitude,
+    sim.arrived,
+    station?.name,
   ]);
 
   const bannerDistanceM = bannerStep.distanceM ?? progress.distanceToManeuverM;
 
   useEffect(() => {
+    if (sim.active || sim.arrived) return;
     if (!hasFix || !station || !route || progress.offRouteKm < 0.12 || recalcLock.current) return;
     recalcLock.current = true;
     setRecalcMsg('Recalculando rota…');
@@ -191,7 +217,7 @@ export default function NavigationScreen() {
 
   const onRecenter = () => {
     setFollow(true);
-    void refresh();
+    if (!sim.active) void refresh();
     mapRef.current?.recenter({
       latitude: progress.snappedCoord.latitude,
       longitude: progress.snappedCoord.longitude,
@@ -202,6 +228,14 @@ export default function NavigationScreen() {
     });
   };
 
+  const onStartSim = (preset: SimSpeed) => {
+    if (!route?.coordinates || route.coordinates.length < 2) return;
+    setFollow(true);
+    setPerspective('nav3d');
+    setSimPanelOpen(false);
+    sim.start(preset);
+  };
+
   return (
     <View style={{ flex: 1, backgroundColor: '#0B1220' }}>
       <MapCanvas
@@ -210,16 +244,16 @@ export default function NavigationScreen() {
         height="100%"
         perspective={perspective}
         dark={isDark}
-        followUser={follow && hasFix}
+        followUser={follow && navHasFix}
         navigationMode
         showRoute
         routeCoordinates={progress.remainingLine.length ? progress.remainingLine : route?.coordinates}
         traveledCoordinates={progress.traveledLine}
-        userCoord={hasFix ? progress.snappedCoord : undefined}
-        userHeading={hasFix ? progress.heading : null}
-        cameraTarget={hasFix ? progress.cameraTarget : undefined}
-        focus={hasFix ? progress.snappedCoord : undefined}
-        hideUserMarker={!hasFix}
+        userCoord={navHasFix ? progress.snappedCoord : undefined}
+        userHeading={navHasFix ? progress.heading : null}
+        cameraTarget={navHasFix ? progress.cameraTarget : undefined}
+        focus={navHasFix ? progress.snappedCoord : undefined}
+        hideUserMarker={!navHasFix}
         style={{ flex: 1 }}
       />
 
@@ -286,8 +320,110 @@ export default function NavigationScreen() {
           >
             <Icon name={follow ? 'lock-closed' : 'lock-open'} size={18} color={colors.ink} />
           </Pressable>
+
+          <View style={styles.simAnchor}>
+            {simPanelOpen && !sim.active ? (
+              <View
+                style={[
+                  styles.simPanel,
+                  elevation.float,
+                  { backgroundColor: colors.surface },
+                ]}
+              >
+                <Text style={[styles.simTitle, { color: colors.ink }]}>Simular trajeto</Text>
+                <Text style={[styles.simSub, { color: colors.muted }]}>
+                  A seta percorre a rota até o destino
+                </Text>
+                {(Object.keys(SIM_SPEED_PRESETS) as SimSpeed[]).map((key) => (
+                  <Pressable
+                    key={key}
+                    onPress={() => onStartSim(key)}
+                    style={[
+                      styles.simSpeedBtn,
+                      { backgroundColor: sim.speed === key ? '#000' : colors.soft },
+                    ]}
+                  >
+                    <Text
+                      style={{
+                        color: sim.speed === key ? '#fff' : colors.ink,
+                        fontFamily: fontFamily.bold,
+                        fontSize: 14,
+                      }}
+                    >
+                      {SIM_SPEED_PRESETS[key].label}
+                    </Text>
+                    <Text
+                      style={{
+                        color: sim.speed === key ? 'rgba(255,255,255,0.65)' : colors.muted,
+                        fontFamily: fontFamily.medium,
+                        fontSize: 11,
+                      }}
+                    >
+                      ~{SIM_SPEED_PRESETS[key].displayKmh} km/h
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+
+            <Pressable
+              style={[
+                styles.iconFab,
+                elevation.float,
+                { backgroundColor: sim.active || simPanelOpen ? '#276EF1' : colors.surface },
+              ]}
+              onPress={() => {
+                if (sim.active) {
+                  sim.stop();
+                  return;
+                }
+                setSimPanelOpen((o) => !o);
+              }}
+            >
+              <Icon
+                name={sim.active ? 'pause' : 'play'}
+                size={20}
+                color={sim.active || simPanelOpen ? '#fff' : colors.ink}
+              />
+            </Pressable>
+          </View>
         </View>
       </View>
+
+      {sim.active ? (
+        <View style={[styles.simLive, { top: Math.max(insets.top, 12) + 150 }]}>
+          <Text style={{ color: '#fff', fontFamily: fontFamily.bold, fontSize: 12 }}>
+            Simulação · {sim.speedLabel}
+          </Text>
+          <Pressable onPress={sim.cycleSpeed} style={styles.simLiveBtn}>
+            <Text style={{ color: '#fff', fontFamily: fontFamily.bold, fontSize: 11 }}>Velocidade</Text>
+          </Pressable>
+          <Pressable onPress={sim.stop} style={styles.simLiveBtn}>
+            <Text style={{ color: '#FFC043', fontFamily: fontFamily.bold, fontSize: 11 }}>Parar</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {sim.arrived ? (
+        <View style={[styles.arrivedBanner, { top: Math.max(insets.top, 12) + 150 }]}>
+          <Icon name="checkmark-circle" size={18} color="#06C167" />
+          <Text style={{ color: '#fff', fontFamily: fontFamily.bold, flex: 1 }}>
+            Destino alcançado
+          </Text>
+          <Pressable onPress={() => router.push(`/(customer)/arrival/${id}`)}>
+            <Text style={{ color: '#06C167', fontFamily: fontFamily.bold }}>Continuar</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              sim.reset();
+              setSimPanelOpen(true);
+            }}
+            style={{ marginLeft: 10 }}
+          >
+            <Text style={{ color: 'rgba(255,255,255,0.7)', fontFamily: fontFamily.bold }}>Replay</Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       {recalcMsg ? (
         <View style={[styles.toast, { top: Math.max(insets.top, 12) + 150, backgroundColor: colors.overlay }]}>
@@ -295,7 +431,7 @@ export default function NavigationScreen() {
         </View>
       ) : null}
 
-      {!hasFix ? (
+      {!hasFix && !sim.active && !sim.arrived ? (
         <Pressable
           style={[styles.gpsBanner, { top: Math.max(insets.top, 12) + 150, backgroundColor: '#000' }]}
           onPress={() => void refresh()}
@@ -308,7 +444,7 @@ export default function NavigationScreen() {
         </Pressable>
       ) : null}
 
-      {progress.offRouteKm >= 0.08 && hasFix && !recalcMsg ? (
+      {progress.offRouteKm >= 0.08 && hasFix && !sim.active && !recalcMsg ? (
         <View style={[styles.offRoute, { top: Math.max(insets.top, 12) + 150 }]}>
           <Icon name="warning-outline" size={14} color="#FFC043" />
           <Text style={{ color: '#fff', fontFamily: fontFamily.semibold, fontSize: 12 }}>Fora da rota</Text>
@@ -320,7 +456,7 @@ export default function NavigationScreen() {
         pointerEvents="none"
         style={[styles.speedAnchor, { bottom: Math.max(insets.bottom, 10) + 168 }]}
       >
-        <NavSpeedometer speedKmh={speedKmh} />
+        <NavSpeedometer speedKmh={navSpeedKmh} />
       </View>
 
       <NavBottomDock
@@ -330,7 +466,10 @@ export default function NavigationScreen() {
         batteryOk={energy.viable}
         destination={station?.name}
         onArrive={() => router.push(`/(customer)/arrival/${id}`)}
-        onEnd={() => router.replace('/(customer)/(tabs)/map')}
+        onEnd={() => {
+          sim.stop();
+          router.replace('/(customer)/(tabs)/map');
+        }}
       />
     </View>
   );
@@ -407,5 +546,64 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 999,
+  },
+  simAnchor: {
+    position: 'relative',
+    alignItems: 'center',
+    zIndex: 30,
+  },
+  /** Abre à esquerda do play — não cobre o botão que abre o painel */
+  simPanel: {
+    position: 'absolute',
+    right: 52,
+    bottom: 0,
+    width: 200,
+    borderRadius: 16,
+    padding: 12,
+    gap: 8,
+    zIndex: 40,
+  },
+  simTitle: {
+    fontFamily: fontFamily.extrabold,
+    fontSize: 14,
+  },
+  simSub: {
+    fontFamily: fontFamily.medium,
+    fontSize: 11,
+    marginBottom: 2,
+  },
+  simSpeedBtn: {
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 2,
+  },
+  simLive: {
+    position: 'absolute',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: 'rgba(39,110,241,0.95)',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+  },
+  simLiveBtn: {
+    paddingHorizontal: 6,
+  },
+  arrivedBanner: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(11,18,32,0.94)',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(6,193,103,0.45)',
   },
 });

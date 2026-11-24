@@ -1,5 +1,6 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { FavoriteButton } from './FavoriteButton';
 import { Icon } from './Icon';
 import { formatPriceKwh } from '../lib/format';
 import type { StationWithMetrics } from '../types/database';
@@ -10,11 +11,15 @@ import { radius } from '../theme/tokens';
 export function StationCard({
   station,
   onPress,
+  showFavorite = true,
+  onFavoriteChange,
 }: {
   station: StationWithMetrics;
   onPress?: () => void;
+  showFavorite?: boolean;
+  onFavoriteChange?: (favorite: boolean) => void;
 }) {
-  const { colors, isDark } = useTheme();
+  const { colors } = useTheme();
   const types = Array.from(new Set((station.connectors ?? []).map((c) => c.connector_type))).join(' · ');
 
   return (
@@ -23,8 +28,8 @@ export function StationCard({
       style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}
     >
       <View style={styles.row}>
-        <View style={[styles.bolt, { backgroundColor: isDark ? '#fff' : '#000' }]}>
-          <Icon name="flash" size={16} color={isDark ? '#000' : '#fff'} />
+        <View style={[styles.bolt, { backgroundColor: colors.primary }]}>
+          <Icon name="flash" size={16} color={colors.onPrimary} />
         </View>
         <View style={{ flex: 1 }}>
           <Text style={[styles.title, { color: colors.ink, fontFamily: fontFamily.bold }]} numberOfLines={1}>
@@ -35,6 +40,11 @@ export function StationCard({
             {station.total_connectors} livres
           </Text>
         </View>
+        {showFavorite ? (
+          <View onStartShouldSetResponder={() => true}>
+            <FavoriteButton stationId={station.id} size={22} onChange={onFavoriteChange} />
+          </View>
+        ) : null}
         <Text style={[styles.price, { color: colors.ink, fontFamily: fontFamily.extrabold }]}>
           {formatPriceKwh(station.min_price)}
         </Text>

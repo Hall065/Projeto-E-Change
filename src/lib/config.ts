@@ -1,13 +1,27 @@
+/** Escola SENAI "Luiz Varga" — Limeira/SP (fallback quando GPS está bloqueado, ex.: PCs do SENAI). */
+export const SENAI_LUIZ_VARGA = {
+  name: 'SENAI Luiz Varga',
+  address: 'Praça Prof. Antonio de Queiroz, 72 — Jardim Mercedes, Limeira/SP',
+  cep: '13480-251',
+  latitude: -22.5710758,
+  longitude: -47.4039549,
+  label: 'SENAI Luiz Varga · Limeira',
+} as const;
+
 export const mapConfig = {
   /** Opcional: ativa Google Maps nativo (Android) / JS no futuro */
   googleMapsApiKey: process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ?? '',
   /** Opcional: Mapbox GL 3D real no web — ver src/maps/README.md */
   mapboxToken: process.env.EXPO_PUBLIC_MAPBOX_TOKEN ?? '',
   /**
-   * Parque do mapa (Praça da Sé) — NÃO é a posição do usuário.
-   * Só usado para centralizar o mapa antes do GPS; o puck só aparece com hasFix.
+   * Centro padrão = campus SENAI Luiz Varga (Limeira).
+   * Usado antes do GPS e como fallback quando a localização do dispositivo é negada/bloqueada.
    */
-  defaultCenter: { latitude: -23.5505, longitude: -46.6333 },
+  defaultCenter: {
+    latitude: SENAI_LUIZ_VARGA.latitude,
+    longitude: SENAI_LUIZ_VARGA.longitude,
+  },
+  fallbackCampus: SENAI_LUIZ_VARGA,
   /** Estilo vetorial gratuito com prédios 3D (MapLibre) */
   openFreeMapStyle: 'https://tiles.openfreemap.org/styles/liberty',
   openFreeMapStyleDark: 'https://tiles.openfreemap.org/styles/dark',
@@ -18,7 +32,7 @@ export const paymentConfig = {
   mercadoPagoAccessToken: process.env.EXPO_PUBLIC_MERCADOPAGO_ACCESS_TOKEN ?? '',
   mercadoPagoPublicKey: process.env.EXPO_PUBLIC_MERCADOPAGO_PUBLIC_KEY ?? '',
   pixMerchantName: 'E-CHARGE MAP',
-  pixMerchantCity: 'SAO PAULO',
+  pixMerchantCity: 'LIMEIRA',
   /** Chave Pix demo (e-mail) — troque pela chave real do recebedor */
   pixKey: process.env.EXPO_PUBLIC_PIX_KEY ?? 'pagamentos@echargemap.app',
 };

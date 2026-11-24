@@ -44,9 +44,11 @@ type Props = {
   navigationMode?: boolean;
 };
 
-const ML_VERSION = '5.6.2';
-const ML_CSS = `https://unpkg.com/maplibre-gl@${ML_VERSION}/dist/maplibre-gl.css`;
-const ML_JS = `https://unpkg.com/maplibre-gl@${ML_VERSION}/dist/maplibre-gl.js`;
+/** 5.7.2+ corrige crash `children[n].key` no zoom alto (nav 3D). */
+const ML_VERSION = '5.24.1';
+/** jsDelivr costuma ser mais rápido/estável que unpkg no BR */
+const ML_CSS = `https://cdn.jsdelivr.net/npm/maplibre-gl@${ML_VERSION}/dist/maplibre-gl.css`;
+const ML_JS = `https://cdn.jsdelivr.net/npm/maplibre-gl@${ML_VERSION}/dist/maplibre-gl.js`;
 
 declare global {
   interface Window {
@@ -56,8 +58,14 @@ declare global {
 
 function ensureCss() {
   if (typeof document === 'undefined') return;
-  const id = 'echarge-maplibre-css';
+  const id = `echarge-maplibre-css-${ML_VERSION}`;
   if (document.getElementById(id)) return;
+  document.querySelectorAll('link[id^="echarge-maplibre-css"]').forEach((n) => n.remove());
+  const preload = document.createElement('link');
+  preload.rel = 'preload';
+  preload.as = 'style';
+  preload.href = ML_CSS;
+  document.head.appendChild(preload);
   const link = document.createElement('link');
   link.id = id;
   link.rel = 'stylesheet';
@@ -67,24 +75,46 @@ function ensureCss() {
 
 function loadMapLibre(): Promise<any> {
   if (typeof window === 'undefined') return Promise.reject(new Error('no window'));
-  if (window.maplibregl) return Promise.resolve(window.maplibregl);
+  const scriptId = `echarge-maplibre-js-${ML_VERSION}`;
+  if (window.maplibregl && (window as any).__echargeMlVersion === ML_VERSION) {
+    return Promise.resolve(window.maplibregl);
+  }
   ensureCss();
   return new Promise((resolve, reject) => {
-    const existing = document.getElementById('echarge-maplibre-js') as HTMLScriptElement | null;
+    const existing = document.getElementById(scriptId) as HTMLScriptElement | null;
     if (existing) {
-      existing.addEventListener('load', () => resolve(window.maplibregl));
+      existing.addEventListener('load', () => {
+        (window as any).__echargeMlVersion = ML_VERSION;
+        resolve(window.maplibregl);
+      });
       existing.addEventListener('error', () => reject(new Error('maplibre script failed')));
-      if (window.maplibregl) resolve(window.maplibregl);
+      if (window.maplibregl && (window as any).__echargeMlVersion === ML_VERSION) {
+        resolve(window.maplibregl);
+      }
       return;
     }
+    document.querySelectorAll('script[id^="echarge-maplibre-js"]').forEach((n) => n.remove());
+    const preload = document.createElement('link');
+    preload.rel = 'preload';
+    preload.as = 'script';
+    preload.href = ML_JS;
+    document.head.appendChild(preload);
     const script = document.createElement('script');
-    script.id = 'echarge-maplibre-js';
+    script.id = scriptId;
     script.src = ML_JS;
     script.async = true;
-    script.onload = () => resolve(window.maplibregl);
+    script.onload = () => {
+      (window as any).__echargeMlVersion = ML_VERSION;
+      resolve(window.maplibregl);
+    };
     script.onerror = () => reject(new Error('maplibre script failed'));
     document.head.appendChild(script);
   });
+}
+
+/** Chamado no boot web para baixar MapLibre antes da tela do mapa. */
+export function prefetchMapLibre() {
+  void loadMapLibre().catch(() => undefined);
 }
 
 function emptyLine() {
@@ -234,7 +264,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           zoom: perspectiveRef.current === 'nav3d' ? 17.2 : 14,
           pitch: perspectiveRef.current === 'nav3d' ? 68 : 0,
           bearing: 0,
-          maxPitch: 85,
+          maxPitch: 80,
+          maxZoom: 18.5,
           attributionControl: true,
           // Precisa antialias no contexto WebGL compartilhado com Three.js
           canvasContextAttributes: { antialias: true },
@@ -242,71 +273,199 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
         map.addControl(new ML.NavigationControl({ visualizePitch: true }), 'bottom-right');
 
-        const ensure3dBuildings = () => {
-          if (map.getLayer('building-3d') || map.getLayer('echarge-3d-buildings')) return;
-          const style = map.getStyle();
-          const sourceId = style?.sources?.openmaptiles
-            ? 'openmaptiles'
-            : style?.sources?.composite
-              ? 'composite'
-              : null;
-          if (!sourceId) return;
-
-          let beforeId: string | undefined;
-          for (const layer of style.layers ?? []) {
-            if (layer.type === 'symbol' && layer.layout?.['text-field']) {
-              beforeId = layer.id;
-              break;
-            }
+        // Evita overlay do Expo com erros internos de tile já tratados / conhecidos
+        map.on('error', (e: any) => {
+          const msg = String(e?.error?.message ?? e?.message ?? '');
+          if (
+            msg.includes("reading 'key'") ||
+            msg.includes('reading "key"') ||
+            msg.includes('Failed to fetch') ||
+            msg.includes('AJAXError')
+          ) {
+            return;
           }
+          console.warn('[MapLibre]', msg || e);
+        });
 
-          // Esconde fill 2D de prédios para não “achatar” sob a extrusão
-          if (map.getLayer('building')) {
+        const ensure3dBuildings = () => {
+          try {
+            if (map.getLayer('building-3d') || map.getLayer('echarge-3d-buildings')) return;
+            const style = map.getStyle();
+            if (!style?.sources) return;
+            const sourceId = style.sources.openmaptiles
+              ? 'openmaptiles'
+              : style.sources.composite
+                ? 'composite'
+                : null;
+            if (!sourceId) return;
+
+            let beforeId: string | undefined;
+            for (const layer of style.layers ?? []) {
+              if (!layer?.id) continue;
+              if (layer.type === 'symbol' && layer.layout?.['text-field']) {
+                beforeId = layer.id;
+                break;
+              }
+            }
+            if (beforeId && !map.getLayer(beforeId)) beforeId = undefined;
+
+            if (map.getLayer('building')) {
+              try {
+                map.setLayoutProperty('building', 'visibility', 'none');
+              } catch {
+                /* ok */
+              }
+            }
+
+            map.addLayer(
+              {
+                id: 'echarge-3d-buildings',
+                source: sourceId,
+                'source-layer': 'building',
+                type: 'fill-extrusion',
+                minzoom: 14,
+                filter: ['!=', ['get', 'hide_3d'], true],
+                paint: {
+                  'fill-extrusion-color': dark ? '#3a3a3a' : '#d6cfc4',
+                  'fill-extrusion-height': [
+                    'interpolate',
+                    ['linear'],
+                    ['zoom'],
+                    14,
+                    0,
+                    15.5,
+                    ['coalesce', ['get', 'render_height'], ['get', 'height'], 10],
+                  ],
+                  'fill-extrusion-base': [
+                    'interpolate',
+                    ['linear'],
+                    ['zoom'],
+                    14,
+                    0,
+                    15.5,
+                    ['coalesce', ['get', 'render_min_height'], ['get', 'min_height'], 0],
+                  ],
+                  'fill-extrusion-opacity': 0.88,
+                },
+              },
+              beforeId,
+            );
+          } catch (err) {
+            console.warn('[MapCanvas.web] 3D buildings skipped', err);
+          }
+        };
+
+        const addStationsLayers = () => {
+          if (map.getSource('stations')) return;
+          map.addSource('stations', {
+            type: 'geojson',
+            data: { type: 'FeatureCollection', features: [] },
+            cluster: true,
+            clusterMaxZoom: 14,
+            clusterRadius: 52,
+          });
+          map.addLayer({
+            id: 'stations-clusters',
+            type: 'circle',
+            source: 'stations',
+            filter: ['has', 'point_count'],
+            paint: {
+              'circle-color': dark ? '#276EF1' : '#0F120E',
+              'circle-radius': ['step', ['get', 'point_count'], 18, 4, 22, 8, 28],
+              'circle-stroke-width': 2,
+              'circle-stroke-color': '#FFFFFF',
+            },
+          });
+          map.addLayer({
+            id: 'stations-cluster-count',
+            type: 'symbol',
+            source: 'stations',
+            filter: ['has', 'point_count'],
+            layout: {
+              'text-field': ['get', 'point_count_abbreviated'],
+              'text-size': 13,
+              'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+            },
+            paint: { 'text-color': '#FFFFFF' },
+          });
+          map.addLayer({
+            id: 'stations-points',
+            type: 'circle',
+            source: 'stations',
+            filter: ['!', ['has', 'point_count']],
+            paint: {
+              'circle-color': [
+                'case',
+                ['==', ['get', 'selected'], 1],
+                '#276EF1',
+                dark ? '#A8E10C' : '#0F120E',
+              ],
+              'circle-radius': 9,
+              'circle-stroke-width': 3,
+              'circle-stroke-color': '#FFFFFF',
+            },
+          });
+          map.addLayer({
+            id: 'stations-price',
+            type: 'symbol',
+            source: 'stations',
+            filter: ['all', ['!', ['has', 'point_count']], ['==', ['get', 'showPrice'], 1]],
+            layout: {
+              'text-field': ['get', 'priceLabel'],
+              'text-offset': [0, -1.6],
+              'text-size': 11,
+              'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+            },
+            paint: {
+              'text-color': '#FFFFFF',
+              'text-halo-color': '#000000',
+              'text-halo-width': 1.4,
+            },
+          });
+
+          map.on('click', 'stations-clusters', (e: any) => {
+            const features = map.queryRenderedFeatures(e.point, { layers: ['stations-clusters'] });
+            const feature = features[0];
+            const clusterId = feature?.properties?.cluster_id;
+            const source = map.getSource('stations');
+            if (clusterId == null || !source?.getClusterExpansionZoom) return;
+            const center = (feature.geometry as any).coordinates;
+            const go = (zoom: number) => map.easeTo({ center, zoom: Math.min(zoom, 16) });
             try {
-              map.setLayoutProperty('building', 'visibility', 'none');
+              const result = source.getClusterExpansionZoom(clusterId);
+              if (result && typeof result.then === 'function') {
+                result.then((zoom: number) => go(zoom)).catch(() => undefined);
+              } else {
+                source.getClusterExpansionZoom(clusterId, (err: any, zoom: number) => {
+                  if (!err && typeof zoom === 'number') go(zoom);
+                });
+              }
             } catch {
               /* ok */
             }
-          }
+          });
 
-          map.addLayer(
-            {
-              id: 'echarge-3d-buildings',
-              source: sourceId,
-              'source-layer': 'building',
-              type: 'fill-extrusion',
-              minzoom: 14,
-              filter: ['!=', ['get', 'hide_3d'], true],
-              paint: {
-                'fill-extrusion-color': dark ? '#3a3a3a' : '#d6cfc4',
-                'fill-extrusion-height': [
-                  'interpolate',
-                  ['linear'],
-                  ['zoom'],
-                  14,
-                  0,
-                  15.5,
-                  ['coalesce', ['get', 'render_height'], ['get', 'height'], 10],
-                ],
-                'fill-extrusion-base': [
-                  'interpolate',
-                  ['linear'],
-                  ['zoom'],
-                  14,
-                  0,
-                  15.5,
-                  ['coalesce', ['get', 'render_min_height'], ['get', 'min_height'], 0],
-                ],
-                'fill-extrusion-opacity': 0.88,
-              },
-            },
-            beforeId,
-          );
+          map.on('click', 'stations-points', (e: any) => {
+            const id = e.features?.[0]?.properties?.id;
+            if (id) onSelectRef.current?.(String(id));
+          });
+
+          map.on('mouseenter', 'stations-clusters', () => {
+            map.getCanvas().style.cursor = 'pointer';
+          });
+          map.on('mouseleave', 'stations-clusters', () => {
+            map.getCanvas().style.cursor = '';
+          });
+          map.on('mouseenter', 'stations-points', () => {
+            map.getCanvas().style.cursor = 'pointer';
+          });
+          map.on('mouseleave', 'stations-points', () => {
+            map.getCanvas().style.cursor = '';
+          });
         };
 
-        map.on('load', () => {
-          if (cancelled) return;
-          ensure3dBuildings();
+        const addRouteLayers = () => {
+          if (map.getSource('route-remain')) return;
           map.addSource('route-alts', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
           map.addSource('route-remain', { type: 'geojson', data: emptyLine() });
           map.addSource('route-traveled', { type: 'geojson', data: emptyLine() });
@@ -338,6 +497,17 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             paint: { 'line-color': '#276EF1', 'line-width': 7 },
             layout: { 'line-cap': 'round', 'line-join': 'round' },
           });
+        };
+
+        map.on('load', () => {
+          if (cancelled) return;
+          try {
+            ensure3dBuildings();
+            addStationsLayers();
+            addRouteLayers();
+          } catch (err) {
+            console.warn('[MapCanvas.web] layers setup', err);
+          }
 
           // Style load pode resetar a câmera — reaplica 3D imediatamente
           const p = perspectiveRef.current;
@@ -345,7 +515,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           const nav3d = p === 'nav3d';
           map.jumpTo({
             pitch: nav3d ? Math.max(preset.pitch, 68) : 0,
-            zoom: nav3d ? Math.max(preset.zoom, 17.4) : 15,
+            zoom: nav3d ? Math.max(preset.zoom, 17.2) : 15,
             bearing: 0,
           });
 
@@ -353,19 +523,27 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             (window as any).__echargeMap = map;
           }
 
-          // Seta 3D real (Three.js) — camada WebGL no mapa
-          createWazeArrow3dLayer(ML)
-            .then((layer) => {
-              if (cancelled || !mapRef.current) return;
-              arrow3dRef.current = layer;
-              if (!map.getLayer(layer.id)) {
-                map.addLayer(layer);
-              }
-              layer.setPose(arrowPoseRef.current);
-              map.triggerRepaint();
-              setArrow3dReady(true);
-            })
-            .catch((err) => console.warn('[MapCanvas.web] 3D arrow failed', err));
+          // Seta 3D real (Three.js) — só após style idle (evita race com tiles)
+          const attachArrow = () => {
+            if (cancelled || !mapRef.current || arrow3dRef.current) return;
+            createWazeArrow3dLayer(ML)
+              .then((layer) => {
+                if (cancelled || !mapRef.current) return;
+                arrow3dRef.current = layer;
+                try {
+                  if (!map.getLayer(layer.id)) map.addLayer(layer);
+                  layer.setPose(arrowPoseRef.current);
+                  map.triggerRepaint();
+                  setArrow3dReady(true);
+                } catch (err) {
+                  console.warn('[MapCanvas.web] 3D arrow addLayer', err);
+                }
+              })
+              .catch((err) => console.warn('[MapCanvas.web] 3D arrow failed', err));
+          };
+          map.once('idle', attachArrow);
+          // Fallback se idle já passou
+          setTimeout(attachArrow, 800);
 
           setMapReady(true);
         });
@@ -403,30 +581,36 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   useEffect(() => {
     const map = mapRef.current;
-    const ML = mlRef.current;
-    if (!mapReady || !map || !ML) return;
+    if (!mapReady || !map) return;
+    const source = map.getSource?.('stations');
+    if (!source) return;
 
+    // Limpa markers HTML legados (migração para GeoJSON cluster)
     stationMarkersRef.current.forEach((m) => m.remove());
     stationMarkersRef.current = [];
 
-    stations.forEach((s) => {
-      const el = document.createElement('button');
-      el.type = 'button';
-      el.style.border = 'none';
-      el.style.cursor = 'pointer';
-      el.style.padding = '0';
-      el.style.background = 'transparent';
-      const selected = selectedStationId === s.id;
-      el.innerHTML = showPrices
-        ? `<div style="background:#000;color:#fff;border-radius:16px;padding:6px 10px;font:700 11px/1.2 'Plus Jakarta Sans',system-ui,sans-serif;box-shadow:0 4px 12px rgba(0,0,0,.25);border:2px solid ${selected ? '#276EF1' : '#000'};white-space:nowrap">R$ ${Number(s.min_price).toFixed(2).replace('.', ',')}</div>`
-        : `<div style="width:28px;height:28px;border-radius:14px;background:${selected ? '#276EF1' : '#000'};border:3px solid #fff;box-shadow:0 3px 8px rgba(0,0,0,.3)"></div>`;
-      el.onclick = (ev) => {
-        ev.stopPropagation();
-        onSelectRef.current?.(s.id);
-      };
-      const marker = new ML.Marker({ element: el }).setLngLat([s.longitude, s.latitude]).addTo(map);
-      stationMarkersRef.current.push(marker);
-    });
+    const features = stations.map((s) => ({
+      type: 'Feature' as const,
+      geometry: {
+        type: 'Point' as const,
+        coordinates: [s.longitude, s.latitude] as [number, number],
+      },
+      properties: {
+        id: s.id,
+        selected: selectedStationId === s.id ? 1 : 0,
+        showPrice: showPrices ? 1 : 0,
+        priceLabel: `R$ ${Number(s.min_price).toFixed(2).replace('.', ',')}`,
+        name: s.name,
+      },
+    }));
+
+    source.setData({ type: 'FeatureCollection', features });
+
+    try {
+      map.setLayoutProperty('stations-price', 'visibility', showPrices ? 'visible' : 'none');
+    } catch {
+      /* layer pode ainda não existir */
+    }
   }, [stations, showPrices, selectedStationId, mapReady]);
 
   useEffect(() => {
